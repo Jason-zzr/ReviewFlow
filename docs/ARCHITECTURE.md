@@ -15,6 +15,7 @@
        │                               │ random token
        │                               ▼
        │                      FastAPI publisher sidecar
+       │                      ├─ Electron parent watchdog
        │                      ├─ SQLite publish jobs
        │                      ├─ manifest verification
        │                      ├─ resumable T+3 collection queue
@@ -24,6 +25,8 @@
 ```
 
 Both processes can open different tables in the same WAL-mode SQLite database. Electron owns creator workspace state and secrets. Python owns publishing and metric records. Neither process sends credentials to the Vue renderer.
+
+Electron supplies its process ID to the packaged Sidecar. Intentional restart/exit terminates the complete Windows process tree; if Electron crashes, the Sidecar watchdog observes the terminated parent and exits independently so it cannot retain ports or installed files.
 
 ## Main flow
 

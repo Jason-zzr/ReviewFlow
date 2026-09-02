@@ -4,6 +4,7 @@ import asyncio
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from reviewflow_publisher.api import create_app
@@ -224,7 +225,11 @@ def test_cli_retro_enforces_t_plus_three():
         "frozenAt": "2026-01-01T00:00:00Z",
         "ranges": {"views": {"p10": 100, "p50": 1000, "p90": 3000}},
     }
-    snapshot = {"id": "snapshot-1", "metrics": {"views": 1200}}
+    snapshot = {
+        "id": "snapshot-1",
+        "capturedAt": "2026-01-04T00:00:00Z",
+        "metrics": {"views": 1200},
+    }
     report = build_retro(
         prediction,
         snapshot,
@@ -232,6 +237,26 @@ def test_cli_retro_enforces_t_plus_three():
         datetime(2026, 1, 4, tzinfo=timezone.utc),
     )
     assert report["intervalHits"]["views"] is True
+
+
+def test_cli_retro_rejects_a_snapshot_captured_before_t_plus_three():
+    prediction = {
+        "id": "prediction-early-snapshot",
+        "frozenAt": "2026-01-01T00:00:00Z",
+        "ranges": {"views": {"p10": 100, "p50": 1000, "p90": 3000}},
+    }
+    snapshot = {
+        "id": "snapshot-before-due",
+        "capturedAt": "2026-01-03T23:59:59Z",
+        "metrics": {"views": 1200},
+    }
+    with pytest.raises(ValueError, match="Snapshot.*72 hours"):
+        build_retro(
+            prediction,
+            snapshot,
+            "2026-01-01T00:00:00Z",
+            datetime(2026, 1, 5, tzinfo=timezone.utc),
+        )
 
 
 def test_t_plus_three_queue_resumes_and_requests_manual_fallback(tmp_path):

@@ -15,9 +15,11 @@ The first release supports Xiaohongshu, Douyin, and Bilibili through a guarded a
 - A local 30-day validation tracker for the eight-publication target and due-only T+3 retrospective completion rate.
 - Ten-sample rubric experiments with backtest gates and explicit activation.
 - Electron `safeStorage` for BYOK credentials; the renderer never receives stored API keys.
-- Workspace import/export and a credential-free diagnostic export.
+- Portable workspace bundles include managed media, verify SHA-256 integrity on import, and retain legacy JSON import compatibility.
+- Credential-free diagnostic export.
 - User-selected media is copied into the application-managed local media library; original files are never modified.
 - Authenticated localhost FastAPI sidecar and `reviewflow` CLI.
+- Electron process-tree shutdown plus a Sidecar parent watchdog prevent orphaned publisher runtimes after restart, exit, or crash.
 - Pinned `omnipost` runtime behind ReviewFlow's guarded `reviewflow-sau` entrypoint.
 - Per-command temporary Cookie material with Windows DPAPI-protected credential files at rest.
 
@@ -71,6 +73,8 @@ npm.cmd run package:win
 ```
 
 The build creates and uses a project-local Python 3.10 environment; an installed ReviewFlow application does not require system Python.
+
+Workspace export creates a portable folder containing `workspace.reviewflow.json` and a `media` directory. Move the whole folder together; import the manifest file on the destination machine. API keys, Cookies, publisher credentials, and local database files are never included.
 
 ## Repository layout
 

@@ -360,11 +360,13 @@ def test_full_local_score_predict_publish_metrics_retro_flow(
         metrics=NormalizedMetrics(views=prediction["views"]["p50"] + 100, likes=80, saves=25),
         raw={"fixture": platform.value},
     ))
+    snapshot_payload = snapshot.model_dump(mode="json")
+    captured_at = snapshot.capturedAt.astimezone(timezone.utc)
     report = build_retro(
         prediction,
-        snapshot.model_dump(mode="json"),
-        "2026-01-01T00:00:00Z",
-        datetime(2026, 1, 1, tzinfo=timezone.utc) + timedelta(hours=72),
+        snapshot_payload,
+        (captured_at - timedelta(hours=72)).isoformat(),
+        captured_at,
     )
     assert report["intervalHits"]["views"] is True
 

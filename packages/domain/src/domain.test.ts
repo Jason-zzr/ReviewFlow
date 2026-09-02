@@ -73,7 +73,7 @@ describe("prediction and retro", () => {
     const snapshot: PerformanceSnapshot = {
       id: "snapshot-1",
       publicationId: "publication-1",
-      capturedAt: new Date().toISOString(),
+      capturedAt: "2026-01-04T00:00:00.000Z",
       source: "manual",
       metrics: { views: 1_100, likes: 80, saves: 20, comments: 9, shares: 7, followersGained: 3 },
     };
@@ -128,6 +128,33 @@ describe("prediction and retro", () => {
       prediction,
       snapshot,
     })).toThrow(/72 hours/);
+  });
+
+  it("rejects a snapshot captured before T+3 even when the review happens later", () => {
+    const prediction = freezePrediction(buildPrediction({
+      id: "prediction-early-snapshot",
+      contentId: "content-1",
+      platform: "douyin",
+      accountId: "account-1",
+      kind: "video",
+      history,
+      benchmarks: [],
+    }), "2026-01-01T00:00:00.000Z");
+    const snapshot: PerformanceSnapshot = {
+      id: "snapshot-before-due",
+      publicationId: "publication-before-due",
+      capturedAt: "2026-01-03T23:59:59.000Z",
+      source: "manual",
+      metrics: { views: 100, likes: 10, saves: 2, comments: 1, shares: 1, followersGained: 0 },
+    };
+    expect(() => buildRetroReport({
+      id: "retro-after-due",
+      publicationId: "publication-before-due",
+      publishedAt: "2026-01-01T00:00:00.000Z",
+      completedAt: "2026-01-05T00:00:00.000Z",
+      prediction,
+      snapshot,
+    })).toThrow(/snapshot.*72 hours/i);
   });
 });
 

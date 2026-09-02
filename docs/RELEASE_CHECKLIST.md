@@ -17,13 +17,15 @@
 - [ ] Run `scripts/smoke-publisher.ps1` against the packaged `resources/publisher` executables with `-MinimalPath`.
 - [ ] Complete the first-run guide and restart the application.
 - [ ] Confirm real publishing is off by default, persists only after an explicit user switch, and restarting the Sidecar applies the change.
-- [ ] Confirm scoring, prediction, workspace persistence, export/import, and diagnostics.
+- [ ] Confirm scoring, prediction, workspace persistence, portable export/import, and diagnostics.
+- [ ] Move an exported workspace bundle to a fresh user-data directory, import `workspace.reviewflow.json`, and confirm every referenced media file is copied into the new managed library with matching content.
 - [ ] Select media, confirm a managed copy exists under application user data, restart, and confirm the managed copy remains eligible for preview without exposing unrelated local files.
 - [ ] Confirm the diagnostic file excludes credentials, content bodies, media paths, and raw platform payloads.
 - [ ] Open each platform login terminal; leave QR/captcha interaction to the operator.
 - [ ] Confirm `.dpapi` credential files do not contain plaintext Cookie markers and temporary session directories are removed.
 - [ ] Confirm duplicate confirmation clicks reuse one idempotency-bound job.
 - [ ] Confirm a stopped uploader becomes `unknown`, not `published`.
+- [ ] Force-end the desktop process, wait for the parent watchdog, and confirm no packaged Sidecar process remains before uninstalling.
 - [ ] Confirm a challenge or expired Cookie stops with `userActionRequired`.
 - [ ] Confirm T+3 work resumes after an application restart and failed automatic collection requests manual input.
 

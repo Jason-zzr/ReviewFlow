@@ -18,9 +18,17 @@ export const buildRetroReport = (input: {
 }): RetroReport => {
   if (!input.prediction.frozenAt) throw new Error("Only frozen predictions can be reviewed");
   const completedAt = input.completedAt ?? new Date().toISOString();
-  if (!isRetroDue(input.publishedAt, new Date(completedAt))) {
+  const completedAtTime = new Date(completedAt).getTime();
+  const dueAt = retroDueAt(input.publishedAt);
+  const dueAtTime = new Date(dueAt).getTime();
+  const capturedAtTime = new Date(input.snapshot.capturedAt).getTime();
+  if (!Number.isFinite(completedAtTime)) throw new Error("Retrospective completion time is invalid");
+  if (!Number.isFinite(capturedAtTime)) throw new Error("Snapshot capture time is invalid");
+  if (completedAtTime < dueAtTime) {
     throw new Error("Retrospective is available 72 hours after publication");
   }
+  if (capturedAtTime < dueAtTime) throw new Error("Snapshot must be captured at least 72 hours after publication");
+  if (capturedAtTime > completedAtTime) throw new Error("Snapshot cannot be captured after the retrospective is completed");
   const intervalHits: RetroReport["intervalHits"] = {};
   const relativeErrors: RetroReport["relativeErrors"] = {};
   const insights: string[] = [];
@@ -47,7 +55,7 @@ export const buildRetroReport = (input: {
     publicationId: input.publicationId,
     predictionId: input.prediction.id,
     snapshotId: input.snapshot.id,
-    dueAt: retroDueAt(input.publishedAt),
+    dueAt,
     completedAt,
     intervalHits,
     relativeErrors,

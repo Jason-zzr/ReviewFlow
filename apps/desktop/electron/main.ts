@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import Ajv from "ajv";
 import { importMediaFiles, isManagedMediaPath } from "./media-library.js";
 import { loadWorkspacePayload, saveWorkspacePayload } from "./workspace-store.js";
+import { exportWorkspaceBundle, importWorkspaceBundle } from "./workspace-transfer.js";
 
 const moduleDir = dirname(fileURLToPath(import.meta.url));
 const sidecarPort = 43_117 + (randomBytes(2).readUInt16BE(0) % 1_000);
@@ -193,6 +194,44 @@ const waitForSidecar = async (): Promise<void> => {
   if (sidecarStatus === "starting") sidecarStatus = "stopped";
 };
 
+const terminateProcessTree = (child: ChildProcess): Promise<void> => new Promise((resolveStop) => {
+  if (!child.pid || child.exitCode !== null) {
+    resolveStop();
+    return;
+  }
+  let settled = false;
+  const finish = (): void => {
+    if (settled) return;
+    settled = true;
+    clearTimeout(timeout);
+    resolveStop();
+  };
+  const timeout = setTimeout(() => {
+    child.kill();
+    finish();
+  }, 3_000);
+  if (process.platform !== "win32") {
+    child.once("exit", finish);
+    child.kill();
+    return;
+  }
+  const terminator = spawn("taskkill.exe", ["/pid", String(child.pid), "/t", "/f"], {
+    windowsHide: true,
+    stdio: "ignore",
+  });
+  terminator.once("exit", finish);
+  terminator.once("error", () => {
+    child.kill();
+    finish();
+  });
+});
+
+const stopSidecar = async (): Promise<void> => {
+  const current = sidecar;
+  sidecar = null;
+  if (current) await terminateProcessTree(current);
+};
+
 const startSidecar = (): void => {
   const dataDir = join(app.getPath("userData"), "data");
   const publisherDataDir = join(app.getPath("userData"), "publisher");
@@ -204,6 +243,7 @@ const startSidecar = (): void => {
     REVIEWFLOW_PUBLISHER_DATA_DIR: publisherDataDir,
     REVIEWFLOW_LIVE_PUBLISH: livePublishingEnabled() ? "1" : "0",
     REVIEWFLOW_BILIUP_EXECUTABLE: biliupRuntimePath(),
+    REVIEWFLOW_PARENT_PID: String(process.pid),
   };
   if (app.isPackaged) {
     const executable = join(process.resourcesPath, "publisher", "reviewflow-sidecar.exe");
@@ -240,18 +280,7 @@ const startSidecar = (): void => {
 };
 
 const restartSidecar = async (): Promise<void> => {
-  const previous = sidecar;
-  sidecar = null;
-  if (previous) {
-    await new Promise<void>((resolveStop) => {
-      const timeout = setTimeout(resolveStop, 1_500);
-      previous.once("exit", () => {
-        clearTimeout(timeout);
-        resolveStop();
-      });
-      previous.kill();
-    });
-  }
+  await stopSidecar();
   sidecarStatus = "starting";
   startSidecar();
   await waitForSidecar();
@@ -353,28 +382,30 @@ app.whenReady().then(() => {
   });
 
   ipcMain.handle("workspace:export", async () => {
-    const result = await dialog.showSaveDialog({
-      defaultPath: `reviewflow-workspace-${new Date().toISOString().slice(0, 10)}.json`,
-      filters: [{ name: "ReviewFlow JSON", extensions: ["json"] }],
+    const result = await dialog.showOpenDialog({
+      title: "选择工作区包保存位置",
+      properties: ["openDirectory", "createDirectory"],
     });
-    if (result.canceled || !result.filePath) return null;
-    writeFileSync(result.filePath, JSON.stringify({ version: 1, workspace: loadWorkspacePayload(databasePath()) }, null, 2));
-    return result.filePath;
+    if (result.canceled || !result.filePaths[0]) return null;
+    const exported = await exportWorkspaceBundle({
+      workspace: loadWorkspacePayload(databasePath()),
+      mediaLibraryRoot: mediaLibraryPath(),
+      destinationRoot: result.filePaths[0],
+    });
+    return exported.bundlePath;
   });
 
   ipcMain.handle("workspace:import", async () => {
     const result = await dialog.showOpenDialog({
       properties: ["openFile"],
-      filters: [{ name: "ReviewFlow JSON", extensions: ["json"] }],
+      filters: [{ name: "ReviewFlow 工作区清单", extensions: ["json"] }],
     });
     if (result.canceled || !result.filePaths[0]) return false;
-    const path = realpathSync(result.filePaths[0]);
-    if (statSync(path).size > 5_000_000) throw new Error("Workspace import exceeds the 5 MB safety limit");
-    const parsed = JSON.parse(readFileSync(path, "utf8")) as { version?: unknown; workspace?: unknown };
-    if (parsed.version !== 1 || !parsed.workspace || typeof parsed.workspace !== "object") {
-      throw new Error("Unsupported ReviewFlow workspace export");
+    const imported = await importWorkspaceBundle(result.filePaths[0], mediaLibraryPath());
+    saveWorkspacePayload(databasePath(), imported.workspace);
+    for (const mediaPath of imported.importedMediaPaths) {
+      approvedMediaPaths.add(realpathSync(mediaPath).toLocaleLowerCase());
     }
-    saveWorkspacePayload(databasePath(), parsed.workspace);
     return true;
   });
 
@@ -484,6 +515,7 @@ app.whenReady().then(() => {
 });
 
 app.on("window-all-closed", () => {
-  sidecar?.kill();
-  if (process.platform !== "darwin") app.quit();
+  void stopSidecar().finally(() => {
+    if (process.platform !== "darwin") app.quit();
+  });
 });

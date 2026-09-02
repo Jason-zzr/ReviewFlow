@@ -56,6 +56,20 @@ def build_retro(
     due_at = published + timedelta(hours=72)
     if completed < due_at:
         raise ValueError("Retrospective is available 72 hours after publication")
+    captured_at_value = snapshot.get("capturedAt")
+    if not isinstance(captured_at_value, str):
+        raise ValueError("Snapshot capture time is required")
+    try:
+        captured_at = datetime.fromisoformat(captured_at_value.replace("Z", "+00:00"))
+    except ValueError as error:
+        raise ValueError("Snapshot capture time is invalid") from error
+    if captured_at.tzinfo is None:
+        raise ValueError("Snapshot capture time must include a timezone")
+    captured_at = captured_at.astimezone(timezone.utc)
+    if captured_at < due_at:
+        raise ValueError("Snapshot must be captured at least 72 hours after publication")
+    if captured_at > completed:
+        raise ValueError("Snapshot cannot be captured after the retrospective is completed")
     interval_hits: dict[str, bool] = {}
     relative_errors: dict[str, float] = {}
     ranges = prediction.get("ranges") or {}
