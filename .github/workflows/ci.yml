@@ -4,28 +4,93 @@ on:
   push:
   pull_request:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: reviewflow-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  test:
+  verify:
     runs-on: windows-latest
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - name: Check out source
+        uses: actions/checkout@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
-      - uses: actions/setup-python@v5
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
           python-version: "3.10"
-      - run: npm ci
-      - run: python -m pip install -e "services/publisher[dev,live]" -c services/publisher/constraints-live.txt
-      - run: npm run typecheck
-      - run: npm test
-      - run: npm run build
-      - run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/ensure-biliup.ps1
-      - run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-sidecar.ps1
-      - run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/smoke-sidecar.ps1
-      - run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/smoke-publisher.ps1 -MinimalPath
-      - run: npm run package:dir --workspace @reviewflow/desktop
-      - run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/smoke-sidecar.ps1 -Executable apps/desktop/release/win-unpacked/resources/publisher/reviewflow-sidecar.exe
-      - run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/smoke-publisher.ps1 -Executable apps/desktop/release/win-unpacked/resources/publisher/reviewflow-sau.exe -BiliupExecutable apps/desktop/release/win-unpacked/resources/publisher/biliup.exe -MinimalPath
-      - run: npm audit --audit-level=high
+      - name: Install Node dependencies
+        run: npm.cmd ci
+      - name: Install pinned publisher dependencies
+        run: |
+          python -m venv services/publisher/.venv
+          services\publisher\.venv\Scripts\python.exe -m pip install -e "services/publisher[dev,live]" -c services/publisher/constraints-live.txt
+      - name: Verify publisher dependency provenance
+        run: services\publisher\.venv\Scripts\python.exe scripts/verify-publisher-deps.py
+      - name: Run the complete local quality gate
+        run: npm.cmd run check
+      - name: Audit high-severity Node dependencies
+        run: npm.cmd audit --audit-level=high
+
+  windows-release:
+    needs: verify
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - name: Build and validate the Windows release
+        run: npm.cmd run package:win
+      - name: Smoke-test the installed release without system Python
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/smoke-installed-release.ps1
+      - name: Write release SHA-256 manifest
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $releaseRoot = "apps/desktop/release"
+          $artifacts = @(
+            "$releaseRoot/ReviewFlow-0.1.0-x64-setup.exe",
+            "$releaseRoot/win-unpacked/resources/publisher/reviewflow-sidecar.exe",
+            "$releaseRoot/win-unpacked/resources/publisher/reviewflow-sau.exe",
+            "$releaseRoot/win-unpacked/resources/publisher/biliup.exe"
+          )
+          $lines = foreach ($artifact in $artifacts) {
+            if (-not (Test-Path -LiteralPath $artifact -PathType Leaf)) {
+              throw "Required release artifact is missing: $artifact"
+            }
+            $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $artifact).Hash.ToLowerInvariant()
+            "$hash  $artifact"
+          }
+          [System.IO.File]::WriteAllLines(
+            "$releaseRoot/release-sha256.txt",
+            $lines,
+            [System.Text.UTF8Encoding]::new($false)
+          )
+          Get-Content -LiteralPath "$releaseRoot/release-sha256.txt"
+      - name: Upload installer and integrity manifest
+        uses: actions/upload-artifact@v4
+        with:
+          name: reviewflow-windows-${{ github.sha }}
+          if-no-files-found: error
+          retention-days: 14
+          path: |
+            apps/desktop/release/ReviewFlow-0.1.0-x64-setup.exe
+            apps/desktop/release/ReviewFlow-0.1.0-x64-setup.exe.blockmap
+            apps/desktop/release/release-sha256.txt
