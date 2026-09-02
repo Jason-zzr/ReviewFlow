@@ -68,6 +68,11 @@ class PublishManifest(BaseModel):
     createdAt: datetime
     digest: str | None = None
 
+    @field_validator("createdAt")
+    @classmethod
+    def created_at_must_include_timezone(cls, value: datetime) -> datetime:
+        return require_timezone_aware(value, "createdAt")  # type: ignore[return-value]
+
 
 class PublishPreviewRequest(BaseModel):
     manifest: PublishManifest

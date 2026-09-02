@@ -183,6 +183,31 @@ class Store:
             row = connection.execute("SELECT * FROM publish_jobs WHERE id = ?", (job_id,)).fetchone()
         return self._row_to_job(row) if row else None
 
+    def list_jobs(self, limit: int = 200) -> list[PublishJob]:
+        safe_limit = max(1, min(limit, 500))
+        with self.connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM publish_jobs ORDER BY updated_at DESC LIMIT ?",
+                (safe_limit,),
+            ).fetchall()
+        return [self._row_to_job(row) for row in rows]
+
+    def confirmed_publication_exists(self, publication_id: str) -> bool:
+        job_id, separator, platform = publication_id.rpartition(":")
+        if not separator or not job_id or not platform:
+            return False
+        job = self.get_job(job_id)
+        if job is None or job.dryRun:
+            return False
+        results = job.details.get("results")
+        return isinstance(results, list) and any(
+            isinstance(item, dict)
+            and item.get("platform") == platform
+            and item.get("operatorVerified") is True
+            and item.get("status") == PublicationStatus.published.value
+            for item in results
+        )
+
     def create_job(
         self,
         manifest_id: str,
@@ -192,6 +217,25 @@ class Store:
         dry_run: bool,
         details: dict,
     ) -> PublishJob:
+        job, _created = self.create_job_once(
+            manifest_id,
+            manifest_digest,
+            idempotency_key,
+            status,
+            dry_run,
+            details,
+        )
+        return job
+
+    def create_job_once(
+        self,
+        manifest_id: str,
+        manifest_digest: str,
+        idempotency_key: str,
+        status: PublicationStatus,
+        dry_run: bool,
+        details: dict,
+    ) -> tuple[PublishJob, bool]:
         now = datetime.now(timezone.utc)
         job = PublishJob(
             id=str(uuid4()),
@@ -230,8 +274,8 @@ class Store:
                 raise IdempotencyConflict(
                     "Idempotency key is already bound to a different manifest"
                 ) from error
-            return existing
-        return job
+            return existing, False
+        return job, True
 
     def update_job(self, job_id: str, status: PublicationStatus, details: dict) -> PublishJob:
         now = datetime.now(timezone.utc)
@@ -296,6 +340,15 @@ class Store:
             ).fetchone()
         return self._row_to_metric_task(row) if row else None
 
+    def list_metric_tasks(self, limit: int = 200) -> list[MetricCollectionTask]:
+        safe_limit = max(1, min(limit, 500))
+        with self.connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM metric_collection_queue ORDER BY due_at DESC LIMIT ?",
+                (safe_limit,),
+            ).fetchall()
+        return [self._row_to_metric_task(row) for row in rows]
+
     def schedule_metrics(self, request: MetricScheduleRequest) -> MetricCollectionTask:
         published_at = request.publishedAt.astimezone(timezone.utc)
         due_at = published_at + timedelta(hours=72)
@@ -359,6 +412,36 @@ class Store:
                 (instant,),
             ).fetchall()
         return [self._row_to_metric_task(row) for row in rows]
+
+    def claim_due_metric_tasks(
+        self,
+        now: datetime | None = None,
+        *,
+        lease: timedelta = timedelta(minutes=5),
+    ) -> list[MetricCollectionTask]:
+        instant = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+        lease_until = instant + lease
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            rows = connection.execute(
+                """SELECT id FROM metric_collection_queue
+                WHERE status='pending' AND next_attempt_at <= ? ORDER BY next_attempt_at LIMIT 20""",
+                (instant.isoformat(),),
+            ).fetchall()
+            task_ids = [row["id"] for row in rows]
+            if not task_ids:
+                return []
+            placeholders = ",".join("?" for _ in task_ids)
+            connection.execute(
+                f"""UPDATE metric_collection_queue SET next_attempt_at=?
+                WHERE status='pending' AND id IN ({placeholders})""",
+                (lease_until.isoformat(), *task_ids),
+            )
+            claimed = connection.execute(
+                f"SELECT * FROM metric_collection_queue WHERE id IN ({placeholders})",
+                task_ids,
+            ).fetchall()
+        return [self._row_to_metric_task(row) for row in claimed]
 
     def update_metric_task(
         self,

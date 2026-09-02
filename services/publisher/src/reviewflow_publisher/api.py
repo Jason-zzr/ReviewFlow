@@ -119,6 +119,10 @@ def create_app(store: Store | None = None) -> FastAPI:
             raise HTTPException(status_code=404, detail="Publication job not found")
         return job
 
+    @app.get("/v1/publications", response_model=list[PublishJob], dependencies=[Depends(authorized)])
+    def publications() -> list[PublishJob]:
+        return active_store.list_jobs()
+
     @app.post(
         "/v1/publications/{job_id}/confirm",
         response_model=PublicationConfirmation,
@@ -134,6 +138,8 @@ def create_app(store: Store | None = None) -> FastAPI:
 
     @app.post("/v1/metrics/import", response_model=MetricSnapshot, dependencies=[Depends(authorized)])
     def import_metrics(request: MetricImportRequest) -> MetricSnapshot:
+        if not active_store.confirmed_publication_exists(request.publicationId):
+            raise HTTPException(status_code=404, detail="Confirmed publication not found")
         return active_store.import_metrics(request)
 
     @app.get("/v1/metrics/latest/{publication_id}", response_model=MetricSnapshot, dependencies=[Depends(authorized)])
@@ -143,8 +149,14 @@ def create_app(store: Store | None = None) -> FastAPI:
             raise HTTPException(status_code=404, detail="Metric snapshot not found")
         return snapshot
 
+    @app.get("/v1/metrics/tasks", response_model=list[MetricCollectionTask], dependencies=[Depends(authorized)])
+    def metric_tasks() -> list[MetricCollectionTask]:
+        return active_store.list_metric_tasks()
+
     @app.post("/v1/metrics/schedule", response_model=MetricCollectionTask, dependencies=[Depends(authorized)])
     def schedule_metrics(request: MetricScheduleRequest) -> MetricCollectionTask:
+        if not active_store.confirmed_publication_exists(request.publicationId):
+            raise HTTPException(status_code=404, detail="Confirmed publication not found")
         return active_store.schedule_metrics(request)
 
     @app.post("/v1/metrics/fetch", response_model=MetricFetchResult, dependencies=[Depends(authorized)])

@@ -2,20 +2,31 @@ from __future__ import annotations
 
 import asyncio
 import json
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from threading import Barrier, BrokenBarrierError, Lock
 
 import pytest
 from fastapi.testclient import TestClient
 from typer.testing import CliRunner
 
 from reviewflow_publisher.api import create_app
+from reviewflow_publisher.adapters.base import ExecutionCondition, ExecutionResult
 from reviewflow_publisher.cli import app
 from reviewflow_publisher.digests import manifest_digest
-from reviewflow_publisher.models import MetricScheduleRequest, PublishManifest
+from reviewflow_publisher.models import (
+    MetricFetchResult,
+    MetricScheduleRequest,
+    NormalizedMetrics,
+    PublicationStatus,
+    PublishExecuteRequest,
+    PublishManifest,
+)
 from reviewflow_publisher.metrics import fetch_metrics
 from reviewflow_publisher.models import MetricFetchRequest
 from reviewflow_publisher.growth import build_retro, predict_views, score_assessments
+from reviewflow_publisher.service import PublishService
 from reviewflow_publisher.storage import Store
 from reviewflow_publisher.scheduler import MetricScheduler
 
@@ -70,6 +81,16 @@ def test_manifest_digest_matches_typescript_contract():
     assert manifest_digest(value) == "f00397dbaa3f214630a7776f9663071e37e996fadf520dc6540b6f9fbd7ca3d7"
 
 
+def test_publish_manifest_created_at_requires_timezone():
+    with pytest.raises(ValueError, match="createdAt must include a timezone offset"):
+        PublishManifest.model_validate({
+            "id": "manifest-naive-created-at",
+            "contentId": "content-1",
+            "createdAt": "2026-01-01T00:00:00",
+            "variants": [],
+        })
+
+
 def test_rejects_missing_session(tmp_path, monkeypatch):
     response = client(tmp_path, monkeypatch).get("/v1/adapters")
     assert response.status_code == 401
@@ -107,6 +128,93 @@ def test_idempotency_returns_same_job(tmp_path, monkeypatch):
     first = test_client.post("/v1/publish/execute", headers=auth(), json=payload).json()
     second = test_client.post("/v1/publish/execute", headers=auth(), json=payload).json()
     assert first["id"] == second["id"]
+
+
+def test_publication_job_list_recovers_all_persisted_jobs(tmp_path, monkeypatch):
+    monkeypatch.setenv("REVIEWFLOW_SESSION_TOKEN", "test-session-token-1234")
+    store_path = tmp_path / "publication-list.sqlite3"
+    store = Store(store_path)
+    first = store.create_job(
+        "manifest-1",
+        "digest-1",
+        "idempotency-list-1",
+        PublicationStatus.processing,
+        False,
+        {},
+    )
+    second = store.create_job(
+        "manifest-2",
+        "digest-2",
+        "idempotency-list-2",
+        PublicationStatus.unknown,
+        False,
+        {},
+    )
+
+    response = TestClient(create_app(Store(store_path))).get("/v1/publications", headers=auth())
+
+    assert response.status_code == 200
+    assert {item["id"] for item in response.json()} == {first.id, second.id}
+
+
+def test_concurrent_live_execution_claims_one_publish_job(tmp_path, monkeypatch):
+    initial_reads = Barrier(2)
+    read_lock = Lock()
+
+    class RacingStore(Store):
+        initial_read_count = 0
+
+        def get_job_by_idempotency(self, key):
+            with read_lock:
+                synchronize = self.initial_read_count < 2
+                if synchronize:
+                    self.initial_read_count += 1
+            result = super().get_job_by_idempotency(key)
+            if synchronize:
+                initial_reads.wait(timeout=5)
+            return result
+
+    class CountingAdapter:
+        def __init__(self):
+            self.publish_count = 0
+            self.lock = Lock()
+
+        def validate(self, _variant):
+            return []
+
+        def preview(self, _variant):
+            return ["sau", "xiaohongshu", "upload-video"]
+
+        def runtime_available(self):
+            return True
+
+        async def publish(self, _variant):
+            with self.lock:
+                self.publish_count += 1
+            return ExecutionResult(0, "发布成功", "", ExecutionCondition.success)
+
+    class Registry:
+        def __init__(self, adapter):
+            self.adapter = adapter
+
+        def get(self, _platform):
+            return self.adapter
+
+    monkeypatch.setenv("REVIEWFLOW_LIVE_PUBLISH", "1")
+    value = manifest(tmp_path / "concurrent.mp4")
+    request = PublishExecuteRequest(
+        manifest=value,
+        confirmationDigest=value.digest,
+        idempotencyKey="idem-concurrent-live",
+    )
+    adapter = CountingAdapter()
+    service = PublishService(RacingStore(tmp_path / "concurrent.sqlite3"), Registry(adapter))
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        jobs = list(executor.map(lambda _: asyncio.run(service.execute(request)), range(2)))
+
+    assert jobs[0].id == jobs[1].id
+    assert adapter.publish_count == 1
 
 
 def test_modified_manifest_requires_new_preview(tmp_path, monkeypatch):
@@ -178,6 +286,21 @@ def test_preview_rejects_missing_media(tmp_path, monkeypatch):
     assert "不存在" in response.json()["warnings"][0]
 
 
+def test_preview_rejects_multiple_video_files(tmp_path, monkeypatch):
+    value = manifest(tmp_path / "first.mp4")
+    second = tmp_path / "second.mp4"
+    second.write_bytes(b"second reviewflow test video")
+    value.variants[0].mediaPaths = [
+        str((tmp_path / "first.mp4").resolve()),
+        str(second.resolve()),
+    ]
+
+    preview = PublishService(Store(tmp_path / "multiple-videos.sqlite3")).preview(value)
+
+    assert preview.valid is False
+    assert any("只能包含一个视频" in warning for warning in preview.warnings)
+
+
 def test_bilibili_metrics_are_normalized():
     class FakeResponse:
         def raise_for_status(self):
@@ -209,6 +332,81 @@ def test_other_platform_metrics_fall_back_to_manual():
         MetricFetchRequest(platform="douyin", publicationId="p1", externalRef="https://example.invalid"),
     )
     assert result.status == "manual_required"
+
+
+def test_metrics_import_rejects_an_unknown_publication(tmp_path, monkeypatch):
+    response = client(tmp_path, monkeypatch).post(
+        "/v1/metrics/import",
+        headers=auth(),
+        json={
+            "publicationId": "publication-does-not-exist",
+            "source": "manual",
+            "metrics": {"views": 100},
+        },
+    )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Confirmed publication not found"
+
+
+def test_metric_schedule_rejects_an_unknown_publication(tmp_path, monkeypatch):
+    response = client(tmp_path, monkeypatch).post(
+        "/v1/metrics/schedule",
+        headers=auth(),
+        json={
+            "platform": "bilibili",
+            "publicationId": "publication-does-not-exist",
+            "externalRef": "BV1234567890",
+            "publishedAt": "2026-01-01T00:00:00Z",
+        },
+    )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Confirmed publication not found"
+
+
+def test_confirmed_publication_accepts_metric_schedule_and_import(tmp_path, monkeypatch):
+    monkeypatch.setenv("REVIEWFLOW_SESSION_TOKEN", "test-session-token-1234")
+    store = Store(tmp_path / "confirmed-metrics.sqlite3")
+    job = store.create_job(
+        "manifest-confirmed",
+        "digest-confirmed",
+        "idempotency-confirmed",
+        PublicationStatus.published,
+        False,
+        {
+            "results": [{
+                "platform": "bilibili",
+                "status": "published",
+                "operatorVerified": True,
+            }],
+        },
+    )
+    publication_id = f"{job.id}:bilibili"
+    test_client = TestClient(create_app(store))
+    schedule = test_client.post(
+        "/v1/metrics/schedule",
+        headers=auth(),
+        json={
+            "platform": "bilibili",
+            "publicationId": publication_id,
+            "externalRef": "BV1234567890",
+            "publishedAt": datetime.now(timezone.utc).isoformat(),
+        },
+    )
+    imported = test_client.post(
+        "/v1/metrics/import",
+        headers=auth(),
+        json={
+            "publicationId": publication_id,
+            "source": "manual",
+            "metrics": {"views": 100},
+        },
+    )
+
+    assert schedule.status_code == 200
+    assert imported.status_code == 200
+    assert imported.json()["publicationId"] == publication_id
 
 
 def test_cli_growth_rules_match_starter_contract():
@@ -314,6 +512,84 @@ def test_t_plus_three_queue_resumes_and_requests_manual_fallback(tmp_path):
     assert len(store.due_metric_tasks()) == 1
     assert asyncio.run(MetricScheduler(store).collect_due()) == 1
     assert store.due_metric_tasks() == []
+
+
+def test_metric_task_list_recovers_all_persisted_queue_items(tmp_path, monkeypatch):
+    monkeypatch.setenv("REVIEWFLOW_SESSION_TOKEN", "test-session-token-1234")
+    store_path = tmp_path / "metric-task-list.sqlite3"
+    store = Store(store_path)
+    first = store.schedule_metrics(MetricScheduleRequest(
+        platform="douyin",
+        publicationId="publication-task-list-1",
+        externalRef="https://www.douyin.com/video/one",
+        publishedAt=datetime.now(timezone.utc),
+    ))
+    second = store.schedule_metrics(MetricScheduleRequest(
+        platform="bilibili",
+        publicationId="publication-task-list-2",
+        externalRef="BV1234567890",
+        publishedAt=datetime.now(timezone.utc),
+    ))
+
+    response = TestClient(create_app(Store(store_path))).get("/v1/metrics/tasks", headers=auth())
+
+    assert response.status_code == 200
+    assert {item["id"] for item in response.json()} == {first.id, second.id}
+
+
+def test_concurrent_metric_schedulers_claim_a_due_task_once(tmp_path, monkeypatch):
+    store = Store(tmp_path / "concurrent-metrics.sqlite3")
+    store.schedule_metrics(MetricScheduleRequest(
+        platform="bilibili",
+        publicationId="publication-concurrent-metrics",
+        externalRef="BV1234567890",
+        publishedAt=datetime.now(timezone.utc) - timedelta(hours=73),
+    ))
+    fetch_barrier = Barrier(2)
+    fetch_lock = Lock()
+    fetch_count = 0
+
+    def collect_fixture(request):
+        nonlocal fetch_count
+        with fetch_lock:
+            fetch_count += 1
+        try:
+            fetch_barrier.wait(timeout=0.5)
+        except BrokenBarrierError:
+            pass
+        return MetricFetchResult(
+            status="collected",
+            platform=request.platform,
+            publicationId=request.publicationId,
+            metrics=NormalizedMetrics(views=100),
+            message="fixture collected",
+        )
+
+    monkeypatch.setattr("reviewflow_publisher.scheduler.fetch_metrics", collect_fixture)
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        processed = list(executor.map(
+            lambda _: asyncio.run(MetricScheduler(store).collect_due()),
+            range(2),
+        ))
+
+    assert sum(processed) == 1
+    assert fetch_count == 1
+    assert store.latest_metrics("publication-concurrent-metrics") is not None
+
+
+def test_abandoned_metric_claim_becomes_due_after_its_lease(tmp_path):
+    store = Store(tmp_path / "metric-lease.sqlite3")
+    now = datetime(2026, 1, 5, tzinfo=timezone.utc)
+    store.schedule_metrics(MetricScheduleRequest(
+        platform="bilibili",
+        publicationId="publication-metric-lease",
+        externalRef="BV1234567890",
+        publishedAt=now - timedelta(hours=73),
+    ))
+
+    assert len(store.claim_due_metric_tasks(now, lease=timedelta(seconds=30))) == 1
+    assert store.claim_due_metric_tasks(now + timedelta(seconds=29)) == []
+    assert len(store.claim_due_metric_tasks(now + timedelta(seconds=31))) == 1
 
 
 def test_metric_collection_stops_after_three_errors_and_requests_manual_input(tmp_path, monkeypatch):

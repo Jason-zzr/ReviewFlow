@@ -18,7 +18,7 @@ class MetricScheduler:
 
     async def collect_due(self) -> int:
         processed = 0
-        for task in self.store.due_metric_tasks():
+        for task in self.store.claim_due_metric_tasks():
             processed += 1
             try:
                 result = await asyncio.to_thread(fetch_metrics, MetricFetchRequest(

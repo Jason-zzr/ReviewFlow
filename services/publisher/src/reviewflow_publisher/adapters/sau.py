@@ -40,6 +40,8 @@ class SauAdapter(PublisherAdapter):
         kind = self._kind(variant)
         if not variant.mediaPaths:
             warnings.append("至少需要一个本地素材文件")
+        if kind is ContentKind.video and len(variant.mediaPaths) > 1:
+            warnings.append("视频版本只能包含一个视频素材")
         if kind is ContentKind.video and not suffixes.issubset(video_suffixes):
             warnings.append("视频素材格式不受支持")
         if kind is ContentKind.image_text and not suffixes.issubset(image_suffixes):

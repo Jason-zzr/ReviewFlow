@@ -74,7 +74,7 @@ class PublishService:
         for variant in request.manifest.variants:
             if not self.adapters.get(variant.platform).runtime_available():
                 raise RuntimeError("Pinned omnipost runtime is not installed; install the live extra")
-        job = self.store.create_job(
+        job, claimed = self.store.create_job_once(
             request.manifest.id,
             digest,
             request.idempotencyKey,
@@ -82,6 +82,8 @@ class PublishService:
             False,
             {"commands": preview.commands},
         )
+        if not claimed:
+            return job
         job = self.store.update_job(
             job.id,
             PublicationStatus.processing,
