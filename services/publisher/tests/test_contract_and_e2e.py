@@ -719,6 +719,7 @@ def test_full_local_score_predict_publish_metrics_retro_flow(
         idempotencyKey=f"e2e-{platform.value}-fixture",
     )))
     assert job.status is PublicationStatus.unknown
+    assert job.details["commands"] == preview.commands
     assert adapter.publish_calls == 1
 
     snapshot = store.import_metrics(MetricImportRequest(

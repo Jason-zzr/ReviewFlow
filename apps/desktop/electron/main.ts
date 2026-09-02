@@ -216,7 +216,7 @@ const stopSidecar = async (): Promise<void> => {
 };
 
 const startSidecar = (): void => {
-  const dataDir = join(app.getPath("userData"), "data");
+  const dataDir = join(app.getPath("userData"), "publisher-data");
   const publisherDataDir = join(app.getPath("userData"), "publisher");
   const env: NodeJS.ProcessEnv = {
     ...process.env,
@@ -247,9 +247,14 @@ const startSidecar = (): void => {
   const workspaceRoot = resolve(moduleDir, "../../..");
   const pythonSource = join(workspaceRoot, "services", "publisher", "src");
   env.PYTHONPATH = [pythonSource, env.PYTHONPATH].filter(Boolean).join(";");
+  const developmentPython = join(workspaceRoot, "services", "publisher", ".venv", "Scripts", "python.exe");
   const developmentSau = join(workspaceRoot, "services", "publisher", ".venv", "Scripts", "reviewflow-sau.exe");
   if (existsSync(developmentSau)) env.REVIEWFLOW_SAU_EXECUTABLE = developmentSau;
-  const child = spawn("py", ["-3.10", "-m", "reviewflow_publisher.main"], {
+  const pythonExecutable = existsSync(developmentPython) ? developmentPython : "py";
+  const pythonArguments = existsSync(developmentPython)
+    ? ["-m", "reviewflow_publisher.main"]
+    : ["-3.10", "-m", "reviewflow_publisher.main"];
+  const child = spawn(pythonExecutable, pythonArguments, {
     cwd: join(workspaceRoot, "services", "publisher"),
     env,
     windowsHide: true,

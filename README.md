@@ -17,7 +17,7 @@ The first release supports Xiaohongshu, Douyin, and Bilibili through a guarded a
 - Retrospective reports retain a detached canonical metrics snapshot and show six-metric actual-versus-predicted comparisons, interval hits, relative errors, and the T+3 deadline.
 - A local 30-day validation tracker for the eight-publication target and due-only T+3 retrospective completion rate.
 - Ten-sample, same-context rubric experiments with unique one-to-one retrospective linkage, complete-sample validation, visible weight/correlation comparisons, strict pairwise non-regression, explicit activation, and persisted version/audit history.
-- Restart recovery for the creator workspace, onboarding completion, immutable publish manifest, all Sidecar publication jobs, T+3 task states, and each publication's frozen prediction/score context through an exact Electron request allowlist.
+- Restart recovery for the creator workspace, onboarding completion, immutable publish manifest, all Sidecar publication jobs, T+3 task states, and each publication's frozen prediction/score context through an exact Electron request allowlist. Desktop workspace state and Publisher state use separate versioned SQLite files so their migration domains cannot collide.
 - Electron `safeStorage` for BYOK credentials; the renderer never receives stored API keys.
 - Portable workspace bundles include managed media, verify SHA-256 integrity on import, and retain legacy JSON import compatibility.
 - Credential-free diagnostic export built from an exact, regression-tested field allowlist.
@@ -45,7 +45,7 @@ Run checks:
 npm.cmd run check
 ```
 
-`npm.cmd run check` covers TypeScript type checking, domain/desktop/publisher tests, production builds, three real-Electron publishing flows for video, image/text, and platform-challenge handling, plus a two-process application-restart flow. The video flow imports a quote-aware CSV fixture while the image/text flow verifies manual metric entry. The publishing flows use an isolated fixture preload; the restart flow imports the production main process and uses the production preload, IPC handlers, and an isolated real SQLite database. None of these flows reads user credentials, contacts a platform, or claims live publishing success.
+`npm.cmd run check` covers TypeScript type checking, domain/desktop/publisher tests, production builds, and nine real-Electron scenarios. Three fast renderer scenarios use an isolated fixture preload for video, image/text, and challenge handling; two production-lifecycle phases prove onboarding and edited content survive a complete process restart. Four further production-bridge phases run video, image/text, restart recovery, and three-platform native scheduling through the built production main/preload, random bearer-authenticated localhost Sidecar, exact request allowlist, managed media library, and separate real desktop/Publisher SQLite stores. The schedule phase verifies the desktop local-time input is sealed as an offset-aware manifest timestamp and restored as the intended uploader wall clock, while preserving each platform command in the final job evidence; it also verifies an unscheduled target remains immediate, Bilibili receives its `tid`, and an idempotent retry does not create another job. The video paths import a quote-aware CSV fixture while the image/text paths verify manual metric entry. A test-only Sidecar adapter exercises the non-dry-run state machine without platform requests, and negative checks prove missing/wrong bearer tokens return 401 while a disallowed Origin returns 403. None of these scenarios reads user credentials, contacts a platform, or claims live publishing success.
 
 Core CLI examples:
 
@@ -59,9 +59,11 @@ reviewflow publish execute .\manifest.json --confirm <digest> --idempotency-key 
 reviewflow retro run --prediction .\prediction.json --snapshot .\snapshot.json --published-at 2026-09-01T00:00:00Z --publication-id <confirmed-publication-id>
 ```
 
+The desktop's **复制登录命令** action generates headed login commands for Xiaohongshu and Douyin and a non-headed command for Bilibili. Local acceptance verifies command construction and the unauthenticated status only; it never opens a login terminal or performs a real platform login.
+
 For desktop-parity prediction, the input object includes `id`, `contentId`, `platform`, `accountId`, `kind`, `history`, and `benchmarks`. The CLI then applies the same context filtering, snapshot deduplication, six-metric ranges, bucket probabilities, and baseline rules as the desktop domain module. Legacy metric-row arrays remain supported for scripts that only need a compact views interval.
 
-The desktop starts the Python sidecar with a random session token. Real publishing is disabled by default. Enable it explicitly from **模型设置 → 发布安全开关**; changing the switch restarts the authenticated local Sidecar so the new policy takes effect.
+The desktop starts the Python sidecar from the project `.venv` when it is available (falling back to the Python 3.10 launcher only when necessary) and gives it a random session token. Real publishing is disabled by default. Enable it explicitly from **模型设置 → 发布安全开关**; changing the switch restarts the authenticated local Sidecar so the new policy takes effect.
 
 For development and controlled automation, an environment override is also available:
 
@@ -80,6 +82,8 @@ npm.cmd run package:win
 
 The build creates and uses a project-local Python 3.10 environment; an installed ReviewFlow application does not require system Python.
 The Windows CI uses the same release command after the complete quality gate, verifies the pinned publisher provenance, smoke-tests a temporary installation without system Python, and uploads the installer, all three embedded publisher executables, and their SHA-256 manifest as one independently verifiable artifact.
+
+`scripts/smoke-installed-release.ps1` first verifies the unmodified installed desktop and production Sidecar startup/shutdown boundary with a restricted system `PATH`. It then replaces the Sidecar only inside that guarded temporary installation with a separately packaged fixture that blocks every non-loopback connection, and drives the installed UI through score → prediction → exact confirmation → non-dry-run state machine → operator confirmation → T+3 manual metrics → retrospective, followed by a cold restart recovery. This remains local package evidence, not live-platform acceptance.
 
 Workspace export creates a portable folder containing `workspace.reviewflow.json` and a `media` directory. Move the whole folder together; import the manifest file on the destination machine. API keys, Cookies, publisher credentials, and local database files are never included.
 

@@ -13,7 +13,7 @@
     "package:dir": "npm run build && electron-builder --dir",
     "package:win": "npm run build --workspace @reviewflow/domain && vue-tsc --noEmit && vite build && electron-builder --win nsis",
     "test": "vitest run electron/ai-config-store.test.ts electron/media-library.test.ts electron/workspace-store.test.ts electron/workspace-transfer.test.ts electron/diagnostics-export.test.ts electron/sidecar-request-policy.test.ts src/bridge-payload.test.ts src/onboarding-state.test.ts src/publication-jobs.test.ts src/publication-contexts.test.ts src/metrics-csv.test.ts",
-    "test:e2e": "npm run build --workspace @reviewflow/domain && npm run build && node e2e/renderer-flow.cjs && node e2e/workspace-restart.cjs",
+    "test:e2e": "npm run build --workspace @reviewflow/domain && npm run build && node e2e/renderer-flow.cjs && node e2e/workspace-restart.cjs && node e2e/production-flow.cjs",
     "typecheck": "vue-tsc --noEmit"
   },
   "dependencies": {

@@ -24,7 +24,7 @@
        └───────────────────────────────┴──> XHS / Douyin / Bilibili
 ```
 
-Both processes can open different tables in the same WAL-mode SQLite database. Electron owns creator workspace state and secrets. Python owns publishing and metric records. Neither process sends credentials to the Vue renderer.
+Each process owns a separate WAL-mode SQLite database and migration domain. Electron stores creator workspace state in `userData/data/reviewflow.sqlite3`; Python stores publishing, confirmation, metric, and T+3 records in `userData/publisher-data/reviewflow.sqlite3`. Electron alone owns BYOK secrets, while Python owns DPAPI-protected platform credentials. Neither process sends credentials to the Vue renderer.
 
 Electron supplies its process ID to the packaged Sidecar. Intentional restart/exit terminates the complete Windows process tree; if Electron crashes, the Sidecar watchdog observes the terminated parent and exits independently so it cannot retain ports or installed files.
 

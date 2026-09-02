@@ -105,6 +105,7 @@ class PublishService:
                     job.id,
                     PublicationStatus.unknown,
                     {
+                        **job.details,
                         "results": results,
                         "message": "Uploader stopped unexpectedly; external publication status is unknown",
                         "error": redact(error),
@@ -129,6 +130,7 @@ class PublishService:
                     job.id,
                     PublicationStatus.unknown if prior_submission_may_exist else PublicationStatus.failed,
                     {
+                        **job.details,
                         "results": results,
                         "partialSubmissionPossible": prior_submission_may_exist,
                         "userActionRequired": result.condition
@@ -138,7 +140,11 @@ class PublishService:
         return self.store.update_job(
             job.id,
             PublicationStatus.unknown,
-            {"results": results, "message": "Uploader exited successfully; verify the external publication"},
+            {
+                **job.details,
+                "results": results,
+                "message": "Uploader exited successfully; verify the external publication",
+            },
         )
 
     def confirm_publication(

@@ -15,4 +15,4 @@ export const isAllowedSidecarPath = (path: string): boolean =>
   fixedPaths.has(path)
   || /^\/v1\/publications\/[a-zA-Z0-9._-]+$/.test(path)
   || /^\/v1\/publications\/[a-zA-Z0-9._-]+\/confirm$/.test(path)
-  || /^\/v1\/metrics\/latest\/[a-zA-Z0-9._-]+$/.test(path);
+  || /^\/v1\/metrics\/latest\/[a-zA-Z0-9._:-]+$/.test(path);

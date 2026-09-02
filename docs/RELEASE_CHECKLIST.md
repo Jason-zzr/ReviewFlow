@@ -1,15 +1,18 @@
 # Windows MVP release checklist
 
+This is a reusable checklist for each release candidate, not a historical completion record. Current local evidence and the exact remaining external gates live in `LOCAL_ACCEPTANCE_REPORT.md` and `MVP_COMPLETION_AUDIT.md`; do not check an item based on an older commit's CI run.
+
 ## Reproducible build
 
 - [ ] Use Node.js 22 and CPython 3.10.
 - [ ] Install `services/publisher[dev,live]` with `constraints-live.txt`.
 - [ ] Confirm the omnipost source commit equals `012caee407f2ee9cca8857579b23721c8b6e7f63`.
 - [ ] Run `npm.cmd run check`.
-- [ ] Confirm all three fixture-only real-Electron renderer scenarios pass; they must not read credentials or contact a platform.
+- [ ] Confirm all nine real-Electron scenarios pass: three fixture-preload flows, two production-lifecycle phases, and four production-bridge phases. The fixture Sidecar must block non-loopback network access and none of these local scenarios may read credentials or count as platform acceptance.
 - [ ] Run `scripts/smoke-publisher.ps1 -MinimalPath` and confirm `doctor` plus all three unauthenticated platform checks pass.
 - [ ] Run `npm.cmd run package:win`.
 - [ ] Confirm the installer contains `reviewflow-sidecar.exe` and `reviewflow-sau.exe`.
+- [ ] Run `scripts/smoke-installed-release.ps1`. First verify the unmodified installed Sidecar starts with a minimal system `PATH` and exits with its Electron parent; then verify the temporary-install-only fixture flow and cold restart complete. Building the fixture harness may use the project Python 3.10 environment, but the installed production app must not require system Python.
 - [ ] Record SHA-256 hashes for the installer and embedded publisher executables.
 
 The Windows CI `verify` job enforces publisher dependency provenance, `npm.cmd run check`, and the high-severity npm audit. Its dependent `windows-release` job runs the same `npm.cmd run package:win` command used locally, exercises `scripts/smoke-installed-release.ps1` in a guarded temporary directory with a minimal system `PATH`, fails if any required embedded executable is missing, and uploads the installer, blockmap, all three embedded publisher executables, and `release-sha256.txt` for 14 days. A green hosted run is release evidence, but does not replace the manual UI or real-platform checks below.

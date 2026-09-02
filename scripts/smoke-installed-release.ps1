@@ -32,9 +32,17 @@ $installRoot = Join-Path $testRoot "app"
 $userDataRoot = Join-Path $testRoot "user-data"
 $installedExecutable = Join-Path $installRoot "ReviewFlow.exe"
 $installedSidecar = Join-Path $installRoot "resources\publisher\reviewflow-sidecar.exe"
+$fixtureSidecarSource = Join-Path $projectRoot "services\publisher\tests\fixtures\e2e_sidecar.py"
+$fixturePython = Join-Path $projectRoot "services\publisher\.venv\Scripts\python.exe"
+$fixtureSourceRoot = Join-Path $projectRoot "services\publisher\src"
+$installedFlowHarness = Join-Path $projectRoot "apps\desktop\e2e\installed-flow.cjs"
+$installedFlowResultRoot = Join-Path $projectRoot "apps\desktop\test-results"
+$nodeExecutable = (Get-Command node -ErrorAction Stop).Source
 $previousPath = $env:PATH
 $hadLivePublishingOverride = Test-Path Env:REVIEWFLOW_LIVE_PUBLISH
 $previousLivePublishingOverride = $env:REVIEWFLOW_LIVE_PUBLISH
+$hadE2ERoot = Test-Path Env:REVIEWFLOW_E2E_ROOT
+$previousE2ERoot = $env:REVIEWFLOW_E2E_ROOT
 
 function Get-ProcessesAtPath {
     param([string]$ExecutablePath)
@@ -132,6 +140,39 @@ function Start-AndWait {
     }
 }
 
+function Build-FixtureSidecar {
+    $fixtureRoot = Join-Path $testRoot "fixture-sidecar"
+    $fixtureDist = Join-Path $fixtureRoot "dist"
+    $fixtureWork = Join-Path $fixtureRoot "build"
+    $fixtureSpec = Join-Path $fixtureRoot "spec"
+    foreach ($directory in @($fixtureDist, $fixtureWork, $fixtureSpec)) {
+        New-Item -ItemType Directory -Path $directory -Force | Out-Null
+    }
+    Start-AndWait `
+        -FilePath $fixturePython `
+        -ArgumentList @(
+            "-m", "PyInstaller", "--noconfirm", "--clean", "--onefile",
+            "--name", "reviewflow-sidecar-fixture",
+            "--distpath", $fixtureDist,
+            "--workpath", $fixtureWork,
+            "--specpath", $fixtureSpec,
+            "--paths", $fixtureSourceRoot,
+            "--hidden-import", "reviewflow_publisher.api",
+            "--hidden-import", "uvicorn.logging",
+            "--hidden-import", "uvicorn.loops.auto",
+            "--hidden-import", "uvicorn.protocols.http.auto",
+            "--hidden-import", "uvicorn.protocols.websockets.auto",
+            "--hidden-import", "uvicorn.lifespan.on",
+            $fixtureSidecarSource
+        ) `
+        -Operation "Fixture Sidecar build"
+    $fixtureExecutable = Join-Path $fixtureDist "reviewflow-sidecar-fixture.exe"
+    if (-not (Test-Path -LiteralPath $fixtureExecutable -PathType Leaf)) {
+        throw "Fixture Sidecar executable is missing"
+    }
+    return $fixtureExecutable
+}
+
 try {
     if (-not (Test-Path -LiteralPath $testRoot)) {
         New-Item -ItemType Directory -Path $testRoot | Out-Null
@@ -179,6 +220,52 @@ try {
         throw "Installed Sidecar remained after its Electron parent exited"
     }
 
+    if (-not (Test-Path -LiteralPath $fixturePython -PathType Leaf)) {
+        throw "Project Python 3.10 environment is required to build the isolated fixture Sidecar"
+    }
+    if (-not (Test-Path -LiteralPath $installedFlowHarness -PathType Leaf)) {
+        throw "Installed workflow harness is missing"
+    }
+    $productionSidecarHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $installedSidecar).Hash
+    $fixtureSidecar = Build-FixtureSidecar
+    $fixtureSidecarHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $fixtureSidecar).Hash
+    if ($fixtureSidecarHash -eq $productionSidecarHash) {
+        throw "Fixture Sidecar must be distinguishable from the production Sidecar"
+    }
+    Copy-Item -LiteralPath $fixtureSidecar -Destination $installedSidecar -Force
+    if ((Get-FileHash -Algorithm SHA256 -LiteralPath $installedSidecar).Hash -ne $fixtureSidecarHash) {
+        throw "Temporary installation did not receive the fixture Sidecar"
+    }
+
+    $managedMediaRoot = Join-Path $userDataRoot "media"
+    New-Item -ItemType Directory -Path $managedMediaRoot -Force | Out-Null
+    $managedMedia = Join-Path $managedMediaRoot "installed-flow.mp4"
+    [System.IO.File]::WriteAllBytes(
+        $managedMedia,
+        [byte[]](0, 0, 0, 24, 102, 116, 121, 112, 109, 112, 52, 50, 0, 0, 0, 0, 109, 112, 52, 50, 105, 115, 111, 109)
+    )
+    $env:REVIEWFLOW_E2E_ROOT = $testRoot
+    $env:REVIEWFLOW_LIVE_PUBLISH = "1"
+    Start-AndWait `
+        -FilePath $nodeExecutable `
+        -ArgumentList @(
+            $installedFlowHarness,
+            "--reviewflow-executable=$([Uri]::EscapeDataString($installedExecutable))",
+            "--reviewflow-user-data=$([Uri]::EscapeDataString($userDataRoot))",
+            "--reviewflow-e2e-root=$([Uri]::EscapeDataString($testRoot))",
+            "--reviewflow-media=$([Uri]::EscapeDataString($managedMedia))",
+            "--reviewflow-result-root=$([Uri]::EscapeDataString($installedFlowResultRoot))"
+        ) `
+        -Operation "Installed zero-network workflow"
+    if (-not (Wait-ForNoProcessesAtPath -ExecutablePath $installedExecutable -TimeoutSeconds $ShutdownTimeoutSeconds)) {
+        throw "Installed desktop processes remained after the fixture workflow"
+    }
+    if (-not (Wait-ForNoProcessesAtPath -ExecutablePath $installedSidecar -TimeoutSeconds $ShutdownTimeoutSeconds)) {
+        throw "Fixture Sidecar remained after the installed workflow"
+    }
+    Remove-Item Env:REVIEWFLOW_LIVE_PUBLISH -ErrorAction SilentlyContinue
+    Remove-Item Env:REVIEWFLOW_E2E_ROOT -ErrorAction SilentlyContinue
+
     $uninstallers = @(Get-ChildItem -LiteralPath $installRoot -Filter "Uninstall*.exe" -File)
     if ($uninstallers.Count -ne 1) { throw "Expected one installed uninstaller; found $($uninstallers.Count)" }
     Start-AndWait -FilePath $uninstallers[0].FullName -ArgumentList @("/S") -Operation "Silent uninstall"
@@ -191,6 +278,8 @@ try {
         systemPythonRequired = $false
         realPublishingDefault = "disabled"
         parentWatchdog = "passed"
+        fixtureWorkflow = "passed"
+        fixtureWorkflowRestart = "passed"
         uninstalled = $true
     } | ConvertTo-Json -Compress
 }
@@ -205,6 +294,12 @@ finally {
     }
     else {
         Remove-Item Env:REVIEWFLOW_LIVE_PUBLISH -ErrorAction SilentlyContinue
+    }
+    if ($hadE2ERoot) {
+        $env:REVIEWFLOW_E2E_ROOT = $previousE2ERoot
+    }
+    else {
+        Remove-Item Env:REVIEWFLOW_E2E_ROOT -ErrorAction SilentlyContinue
     }
     if (Test-Path -LiteralPath $installRoot) {
         $activeUninstallers = @(Get-ActiveUninstallers -InstalledPath $installRoot)
