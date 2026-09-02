@@ -12,7 +12,7 @@
     "build": "vue-tsc --noEmit && vite build",
     "package:dir": "npm run build && electron-builder --dir",
     "package:win": "npm run build --workspace @reviewflow/domain && vue-tsc --noEmit && vite build && electron-builder --win nsis",
-    "test": "vitest run electron/media-library.test.ts electron/workspace-store.test.ts electron/workspace-transfer.test.ts electron/diagnostics-export.test.ts src/onboarding-state.test.ts src/publication-jobs.test.ts src/publication-contexts.test.ts",
+    "test": "vitest run electron/media-library.test.ts electron/workspace-store.test.ts electron/workspace-transfer.test.ts electron/diagnostics-export.test.ts electron/sidecar-request-policy.test.ts src/onboarding-state.test.ts src/publication-jobs.test.ts src/publication-contexts.test.ts",
     "typecheck": "vue-tsc --noEmit"
   },
   "dependencies": {

@@ -5,7 +5,16 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .base import ExecutionCondition, ExecutionResult, PublisherAdapter
-from ..models import AdapterCapability, ContentKind, Platform, PlatformVariant
+from ..metrics import fetch_metrics as collect_metrics
+from ..models import (
+    AdapterCapability,
+    ContentKind,
+    MetricFetchRequest,
+    MetricFetchResult,
+    Platform,
+    PlatformVariant,
+    PublicationStatus,
+)
 from ..security import redact
 
 
@@ -102,11 +111,17 @@ class SauAdapter(PublisherAdapter):
             command.append("--headed")
         return command
 
-    async def check_account(self, account: str) -> ExecutionResult:
+    async def _run_account_action(
+        self,
+        action: str,
+        account: str,
+        *,
+        headed: bool = False,
+    ) -> ExecutionResult:
         executable = self.runtime_executable()
         if executable is None:
             raise RuntimeError("Pinned omnipost runtime is unavailable")
-        command = self.account_command("check", account)
+        command = self.account_command(action, account, headed=headed)
         command[0] = executable
         process = await asyncio.create_subprocess_exec(
             *command,
@@ -115,6 +130,25 @@ class SauAdapter(PublisherAdapter):
         )
         stdout, stderr = await process.communicate()
         return self.execution_result(process.returncode or 0, stdout, stderr, limit=2_000)
+
+    async def login(self, account: str, *, headed: bool = False) -> ExecutionResult:
+        return await self._run_account_action("login", account, headed=headed)
+
+    async def check(self, account: str) -> ExecutionResult:
+        return await self._run_account_action("check", account)
+
+    async def check_account(self, account: str) -> ExecutionResult:
+        return await self.check(account)
+
+    def status(self, external_ref: str) -> PublicationStatus:
+        if not external_ref.strip():
+            raise ValueError("External publication reference is required")
+        return PublicationStatus.unknown
+
+    def fetch_metrics(self, request: MetricFetchRequest) -> MetricFetchResult:
+        if request.platform is not self.platform:
+            raise ValueError("Metric request platform does not match adapter")
+        return collect_metrics(request)
 
     @staticmethod
     def execution_result(

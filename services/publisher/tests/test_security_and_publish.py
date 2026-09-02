@@ -17,8 +17,10 @@ from reviewflow_publisher.cli import app
 from reviewflow_publisher.digests import manifest_digest
 from reviewflow_publisher.models import (
     MetricFetchResult,
+    MetricImportRequest,
     MetricScheduleRequest,
     NormalizedMetrics,
+    Platform,
     PublicationStatus,
     PublishExecuteRequest,
     PublishManifest,
@@ -27,7 +29,7 @@ from reviewflow_publisher.metrics import fetch_metrics
 from reviewflow_publisher.models import MetricFetchRequest
 from reviewflow_publisher.growth import build_retro, predict_views, score_assessments
 from reviewflow_publisher.service import PublishService
-from reviewflow_publisher.storage import Store
+from reviewflow_publisher.storage import StaleMetricClaim, Store
 from reviewflow_publisher.scheduler import MetricScheduler
 
 
@@ -365,6 +367,63 @@ def test_metric_schedule_rejects_an_unknown_publication(tmp_path, monkeypatch):
     assert response.json()["detail"] == "Confirmed publication not found"
 
 
+def test_metric_fetch_rejects_an_unknown_publication(tmp_path, monkeypatch):
+    response = client(tmp_path, monkeypatch).post(
+        "/v1/metrics/fetch",
+        headers=auth(),
+        json={
+            "platform": "bilibili",
+            "publicationId": "publication-does-not-exist",
+            "externalRef": "BV1234567890",
+        },
+    )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Confirmed publication not found"
+
+
+def test_metric_fetch_rejects_evidence_from_another_confirmed_post(tmp_path, monkeypatch):
+    monkeypatch.setenv("REVIEWFLOW_SESSION_TOKEN", "test-session-token-1234")
+    store = Store(tmp_path / "mismatched-metric-evidence.sqlite3")
+    job = store.create_job(
+        "manifest-metric-evidence",
+        "digest-metric-evidence",
+        "idempotency-metric-evidence",
+        PublicationStatus.published,
+        False,
+        {
+            "results": [{
+                "platform": "bilibili",
+                "status": "published",
+                "operatorVerified": True,
+                "externalRef": "BV1234567890",
+            }],
+        },
+    )
+    monkeypatch.setattr(
+        "reviewflow_publisher.adapters.sau.SauAdapter.fetch_metrics",
+        lambda _adapter, request: MetricFetchResult(
+            status="manual_required",
+            platform=request.platform,
+            publicationId=request.publicationId,
+            message="fixture should not be reached",
+        ),
+    )
+
+    response = TestClient(create_app(store)).post(
+        "/v1/metrics/fetch",
+        headers=auth(),
+        json={
+            "platform": "bilibili",
+            "publicationId": f"{job.id}:bilibili",
+            "externalRef": "BV0987654321",
+        },
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "Confirmed publication evidence does not match"
+
+
 def test_confirmed_publication_accepts_metric_schedule_and_import(tmp_path, monkeypatch):
     monkeypatch.setenv("REVIEWFLOW_SESSION_TOKEN", "test-session-token-1234")
     store = Store(tmp_path / "confirmed-metrics.sqlite3")
@@ -379,6 +438,7 @@ def test_confirmed_publication_accepts_metric_schedule_and_import(tmp_path, monk
                 "platform": "bilibili",
                 "status": "published",
                 "operatorVerified": True,
+                "externalRef": "BV1234567890",
             }],
         },
     )
@@ -407,6 +467,52 @@ def test_confirmed_publication_accepts_metric_schedule_and_import(tmp_path, monk
     assert schedule.status_code == 200
     assert imported.status_code == 200
     assert imported.json()["publicationId"] == publication_id
+
+
+def test_metric_schedule_cannot_rewrite_a_completed_task(tmp_path, monkeypatch):
+    monkeypatch.setenv("REVIEWFLOW_SESSION_TOKEN", "test-session-token-1234")
+    store = Store(tmp_path / "completed-metric-task.sqlite3")
+    job = store.create_job(
+        "manifest-completed-task",
+        "digest-completed-task",
+        "idempotency-completed-task",
+        PublicationStatus.published,
+        False,
+        {
+            "results": [{
+                "platform": "bilibili",
+                "status": "published",
+                "operatorVerified": True,
+                "externalRef": "BV1234567890",
+            }],
+        },
+    )
+    publication_id = f"{job.id}:bilibili"
+    published_at = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    original = store.schedule_metrics(MetricScheduleRequest(
+        platform="bilibili",
+        publicationId=publication_id,
+        externalRef="BV1234567890",
+        publishedAt=published_at,
+    ))
+    store.update_metric_task(original.id, "collected")
+
+    response = TestClient(create_app(store)).post(
+        "/v1/metrics/schedule",
+        headers=auth(),
+        json={
+            "platform": "bilibili",
+            "publicationId": publication_id,
+            "externalRef": "BV0987654321",
+            "publishedAt": published_at.isoformat(),
+        },
+    )
+
+    assert response.status_code == 409
+    current = store.get_metric_task(Platform.bilibili, publication_id)
+    assert current is not None
+    assert current.status == "collected"
+    assert current.externalRef == "BV1234567890"
 
 
 def test_cli_growth_rules_match_starter_contract():
@@ -565,7 +671,10 @@ def test_concurrent_metric_schedulers_claim_a_due_task_once(tmp_path, monkeypatc
             message="fixture collected",
         )
 
-    monkeypatch.setattr("reviewflow_publisher.scheduler.fetch_metrics", collect_fixture)
+    monkeypatch.setattr(
+        "reviewflow_publisher.adapters.sau.SauAdapter.fetch_metrics",
+        lambda _adapter, request: collect_fixture(request),
+    )
     with ThreadPoolExecutor(max_workers=2) as executor:
         processed = list(executor.map(
             lambda _: asyncio.run(MetricScheduler(store).collect_due()),
@@ -592,6 +701,34 @@ def test_abandoned_metric_claim_becomes_due_after_its_lease(tmp_path):
     assert len(store.claim_due_metric_tasks(now + timedelta(seconds=31))) == 1
 
 
+def test_stale_metric_claim_cannot_complete_after_lease_reassignment(tmp_path):
+    store = Store(tmp_path / "stale-metric-claim.sqlite3")
+    now = datetime(2026, 1, 5, tzinfo=timezone.utc)
+    store.schedule_metrics(MetricScheduleRequest(
+        platform="bilibili",
+        publicationId="publication-stale-claim",
+        externalRef="BV1234567890",
+        publishedAt=now - timedelta(hours=73),
+    ))
+    first = store.claim_due_metric_tasks(now, lease=timedelta(seconds=30))[0]
+    second = store.claim_due_metric_tasks(now + timedelta(seconds=31))[0]
+    assert first.token != second.token
+    metrics = MetricImportRequest(
+        publicationId="publication-stale-claim",
+        source="adapter",
+        metrics=NormalizedMetrics(views=100),
+    )
+
+    with pytest.raises(StaleMetricClaim):
+        store.record_collected_metrics(first.task.id, first.token, metrics)
+    snapshot = store.record_collected_metrics(second.task.id, second.token, metrics)
+
+    assert snapshot.publicationId == "publication-stale-claim"
+    task = store.get_metric_task(Platform.bilibili, "publication-stale-claim")
+    assert task is not None
+    assert task.status == "collected"
+
+
 def test_metric_collection_stops_after_three_errors_and_requests_manual_input(tmp_path, monkeypatch):
     store = Store(tmp_path / "retry-limit.sqlite3")
     task = store.schedule_metrics(MetricScheduleRequest(
@@ -604,7 +741,10 @@ def test_metric_collection_stops_after_three_errors_and_requests_manual_input(tm
     def fail_collection(_request):
         raise RuntimeError("Authorization: Bearer secret-retry-token")
 
-    monkeypatch.setattr("reviewflow_publisher.scheduler.fetch_metrics", fail_collection)
+    monkeypatch.setattr(
+        "reviewflow_publisher.adapters.sau.SauAdapter.fetch_metrics",
+        lambda _adapter, request: fail_collection(request),
+    )
     for attempt in range(3):
         if attempt:
             with store.connect() as connection:

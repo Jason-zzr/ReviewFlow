@@ -84,7 +84,7 @@ jobs:
             [System.Text.UTF8Encoding]::new($false)
           )
           Get-Content -LiteralPath "$releaseRoot/release-sha256.txt"
-      - name: Upload installer and integrity manifest
+      - name: Upload installer, embedded runtimes, and integrity manifest
         uses: actions/upload-artifact@v4
         with:
           name: reviewflow-windows-${{ github.sha }}
@@ -93,4 +93,7 @@ jobs:
           path: |
             apps/desktop/release/ReviewFlow-0.1.0-x64-setup.exe
             apps/desktop/release/ReviewFlow-0.1.0-x64-setup.exe.blockmap
+            apps/desktop/release/win-unpacked/resources/publisher/reviewflow-sidecar.exe
+            apps/desktop/release/win-unpacked/resources/publisher/reviewflow-sau.exe
+            apps/desktop/release/win-unpacked/resources/publisher/biliup.exe
             apps/desktop/release/release-sha256.txt

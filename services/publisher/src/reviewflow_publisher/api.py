@@ -27,11 +27,9 @@ from .models import (
     PublishPreviewRequest,
 )
 from .security import ALLOWED_ORIGINS, require_session, validate_origin
-from .metrics import fetch_metrics
 from .service import PublishService
 from .scheduler import MetricScheduler
-from .storage import Store
-from .storage import IdempotencyConflict
+from .storage import IdempotencyConflict, MetricScheduleConflict, Store
 
 
 def default_data_path() -> Path:
@@ -88,7 +86,7 @@ def create_app(store: Store | None = None) -> FastAPI:
                 runtimeAvailable=False,
                 message="Pinned omnipost runtime is not installed",
             )
-        result = await adapter.check_account(request.accountId)
+        result = await adapter.check(request.accountId)
         return AccountCheckResult(
             platform=request.platform,
             accountId=request.accountId,
@@ -157,12 +155,29 @@ def create_app(store: Store | None = None) -> FastAPI:
     def schedule_metrics(request: MetricScheduleRequest) -> MetricCollectionTask:
         if not active_store.confirmed_publication_exists(request.publicationId):
             raise HTTPException(status_code=404, detail="Confirmed publication not found")
-        return active_store.schedule_metrics(request)
+        if not active_store.confirmed_publication_matches(
+            request.publicationId,
+            request.platform,
+            request.externalRef,
+        ):
+            raise HTTPException(status_code=409, detail="Confirmed publication evidence does not match")
+        try:
+            return active_store.schedule_metrics(request)
+        except MetricScheduleConflict as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
 
     @app.post("/v1/metrics/fetch", response_model=MetricFetchResult, dependencies=[Depends(authorized)])
     def collect_metrics(request: MetricFetchRequest) -> MetricFetchResult:
+        if not active_store.confirmed_publication_exists(request.publicationId):
+            raise HTTPException(status_code=404, detail="Confirmed publication not found")
+        if not active_store.confirmed_publication_matches(
+            request.publicationId,
+            request.platform,
+            request.externalRef,
+        ):
+            raise HTTPException(status_code=409, detail="Confirmed publication evidence does not match")
         try:
-            return fetch_metrics(request)
+            return adapters.get(request.platform).fetch_metrics(request)
         except ValueError as error:
             raise HTTPException(status_code=422, detail=str(error)) from error
         except Exception as error:

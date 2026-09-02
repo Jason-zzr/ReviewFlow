@@ -7,9 +7,9 @@ Scope: Windows local build and fixture-based acceptance only
 
 The local MVP implementation is buildable and its Windows x64 installer is available at `apps/desktop/release/ReviewFlow-0.1.0-x64-setup.exe`.
 
-- TypeScript domain tests: 31 passed, including immutable score-card snapshots, domain-filtered contextual prediction history, retrospective publication linkage, complete and uniquely linked formula calibration samples, tie-aware correlations, strict pairwise non-regression, the 30-day publication target, and T+3 capture-time contracts.
-- Electron tests: 17 passed for managed media boundaries, portable workspace bundles, workspace persistence, migration-version enforcement, unfinished onboarding recovery, exact diagnostic-export allowlisting, multi-job recovery, and frozen publication-context selection.
-- Python publisher tests: 67 passed, including sequential/partial/future-version migration behavior, manifest timezone enforcement, multi-video rejection, confirmed-publication metric linkage, atomic publish and metric-task claims, persisted job/task listing, account-command output redaction, and Windows parent-process lifecycle handling.
+- TypeScript domain tests: 33 passed, including immutable score-card snapshots, prediction-owned content kind, validated freeze timestamps, domain-filtered contextual prediction history, retrospective publication linkage, complete and uniquely linked formula calibration samples, tie-aware correlations, strict pairwise non-regression, the 30-day publication target, and T+3 capture-time contracts.
+- Electron tests: 20 passed for managed media boundaries, portable workspace bundles, workspace persistence, migration-version enforcement, unfinished onboarding recovery, exact diagnostic-export allowlisting, Sidecar recovery-path policy, multi-job recovery, and content-kind-aware frozen publication-context selection.
+- Python publisher tests: 74 passed, including sequential/partial/future-version migration behavior, the complete platform-adapter contract, manifest timezone enforcement, multi-video rejection, confirmed-publication metric and evidence linkage, immutable terminal metric tasks, atomic publish and token-fenced metric-task claims, persisted job/task listing, account-command output redaction, and Windows parent-process lifecycle handling.
 - npm audit: 0 vulnerabilities at the configured high threshold.
 - Python dependency check: no broken requirements; pinned publisher dependencies verified.
 - Packaged Sidecar: healthy; unauthenticated API request returned 401.
@@ -18,15 +18,15 @@ The local MVP implementation is buildable and its Windows x64 installer is avail
 - Packaged desktop startup: Electron and its embedded Sidecar remained running during the startup probe; managed media remained present across startup and clean user data contained no real-publishing opt-in setting.
 - The reusable `scripts/smoke-installed-release.ps1` check installed the NSIS package into a validated temporary directory with a minimal system `PATH`; the installed desktop and both PyInstaller Sidecar process levels stayed alive, real publishing remained disabled, force-ending Electron released the Sidecar, and the silent uninstaller plus guarded temporary cleanup completed successfully.
 - The desktop **今日** view was rendered and visually checked at 1440 × 920 with the persisted MVP validation tracker and rubric progress visible.
-- The updated Windows CI workflow was parsed locally, its pinned publisher provenance check passed, its installed-release smoke script completed locally, and its release-manifest command reproduced the hashes below from the packaged `win-unpacked` executables. The first GitHub-hosted run remains pending until these changes are committed and pushed.
+- [GitHub-hosted CI #4](https://github.com/Jason-zzr/ReviewFlow/actions/runs/33641448116) completed successfully for commit `b4b4466` in 8m03s. The current local workflow additionally uploads the three embedded runtime files named by the integrity manifest; that artifact-layout change awaits its next hosted run after an authorized push.
 
 ## Release artifact
 
 | Artifact | Bytes | SHA-256 |
 | --- | ---: | --- |
-| `ReviewFlow-0.1.0-x64-setup.exe` | 234,902,582 | `ce9ebf676b50259f7404114e9123694614dcf609e5330169183326c8834a2afa` |
-| `reviewflow-sidecar.exe` | 14,589,534 | `544483e06d2d84cd61aee44ae0e22b1fceb0096094cac21dc95cd26c67c0113b` |
-| `reviewflow-sau.exe` | 99,782,029 | `9ac9a93656506ef9e44f1b996067844456567e23d5486e1c8c5c37133b8ead84` |
+| `ReviewFlow-0.1.0-x64-setup.exe` | 234,906,850 | `a8818966bd7579b8e90cfd793c980a8de84bceca0dc10bb4a2d2d0682c3eb43e` |
+| `reviewflow-sidecar.exe` | 14,592,287 | `08d72c3d73046c49472510b32192c4bbf3d0acc7a09c0c4110a69143a609e8e3` |
+| `reviewflow-sau.exe` | 99,782,187 | `d67dbc7247f20dd3551ba075f30f4f69694f5da9f0de011d704f103bc19752c0` |
 | `biliup.exe` | 33,895,936 | `5500912978355e7a64dbbe86ebd7ade2cd4ec8bbc91e16998e4aea7359d0fcdd` |
 
 ## Outstanding acceptance gate

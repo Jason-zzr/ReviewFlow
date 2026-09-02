@@ -38,6 +38,7 @@ import {
   type PublishJobRecord,
 } from "./publication-jobs.js";
 import {
+  predictionMatchesContext,
   resolvePublicationContext,
   type PublicationContextRecord,
 } from "./publication-contexts.js";
@@ -191,11 +192,12 @@ const contentFingerprint = (): string => JSON.stringify({
 
 const predictionIsCurrent = (platform: Platform): boolean => {
   const prediction = predictions.value[platform];
-  return Boolean(
-    prediction
-    && prediction.contentId === content.value.id
-    && prediction.accountId === accountIds.value[platform],
-  );
+  return Boolean(prediction && predictionMatchesContext(prediction, {
+    contentId: content.value.id,
+    platform,
+    accountId: accountIds.value[platform],
+    kind: content.value.kind,
+  }));
 };
 
 const activePrediction = computed(() => predictions.value[predictionPlatform.value] ?? null);
@@ -486,8 +488,12 @@ const confirmPublishedAndSchedule = async (): Promise<void> => {
     const prediction = predictions.value[retroPlatform.value];
     if (
       !prediction?.frozenAt
-      || prediction.contentId !== content.value.id
-      || prediction.accountId !== accountIds.value[retroPlatform.value]
+      || !predictionMatchesContext(prediction, {
+        contentId: content.value.id,
+        platform: retroPlatform.value,
+        accountId: accountIds.value[retroPlatform.value],
+        kind: content.value.kind,
+      })
     ) {
       throw new Error(`请先冻结当前内容的${platformLabel(retroPlatform.value)}预测`);
     }

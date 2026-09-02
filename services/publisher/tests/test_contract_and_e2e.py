@@ -18,6 +18,7 @@ from reviewflow_publisher.digests import manifest_digest
 from reviewflow_publisher.growth import build_retro, predict_views, score_assessments
 from reviewflow_publisher.cli import app, publish_summary
 from reviewflow_publisher.models import (
+    MetricFetchRequest,
     MetricImportRequest,
     MetricScheduleRequest,
     NormalizedMetrics,
@@ -256,6 +257,31 @@ def test_account_check_redacts_child_process_output_and_preserves_exit_code(monk
 def test_bilibili_capability_matches_automatic_metric_collection() -> None:
     assert SauAdapter(Platform.bilibili).capability().supportsAutomaticMetrics is True
     assert SauAdapter(Platform.xiaohongshu).capability().supportsAutomaticMetrics is False
+
+
+@pytest.mark.parametrize("platform", list(Platform))
+def test_adapter_exposes_the_complete_mvp_contract(platform: Platform) -> None:
+    adapter = SauAdapter(platform)
+    for method in (
+        "capability",
+        "login",
+        "check",
+        "validate",
+        "preview",
+        "publish",
+        "status",
+        "fetch_metrics",
+    ):
+        assert callable(getattr(adapter, method, None)), f"{platform.value} is missing {method}"
+
+    assert adapter.status("operator-verified-reference") is PublicationStatus.unknown
+    if platform is not Platform.bilibili:
+        result = adapter.fetch_metrics(MetricFetchRequest(
+            platform=platform,
+            publicationId=f"publication-{platform.value}",
+            externalRef="operator-verified-reference",
+        ))
+        assert result.status == "manual_required"
 
 
 def test_raw_metric_snapshot_is_redacted_and_size_limited() -> None:

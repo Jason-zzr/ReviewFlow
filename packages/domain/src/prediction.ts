@@ -121,6 +121,7 @@ export const buildPrediction = (input: {
     contentId: input.contentId,
     platform: input.platform,
     accountId: input.accountId,
+    kind: input.kind,
     ranges,
     bucketProbabilities: baselineSource === "cold_start" ? coldBuckets : calibratedBuckets,
     confidence,
@@ -139,6 +140,8 @@ export const buildPrediction = (input: {
 
 export const freezePrediction = (prediction: Prediction, at = new Date().toISOString()): Prediction => {
   if (prediction.frozenAt) throw new Error("Prediction is already frozen");
+  if (!Number.isFinite(new Date(at).getTime())) throw new Error("Prediction freeze time is invalid");
+  if (!/(?:Z|[+-]\d{2}:\d{2})$/i.test(at)) throw new Error("Prediction freeze time must include a timezone");
   const ranges = Object.fromEntries(
     Object.entries(prediction.ranges).map(([metric, range]) => [
       metric,

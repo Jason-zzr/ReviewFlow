@@ -18,6 +18,7 @@ const context = (publicationId: string, contentId: string): PublicationContextRe
     contentId,
     platform: "xiaohongshu",
     accountId: "creator-xhs",
+    kind: "video",
     frozenAt: "2026-01-01T00:00:00.000Z",
   } as Prediction,
   assessments: [],
@@ -55,6 +56,17 @@ describe("publication retrospective context", () => {
   it("rejects a prediction whose content or account identity differs from the publication", () => {
     const record = context("publication-1", "content-old");
     record.accountId = "creator-other";
+
+    expect(() => resolvePublicationContext(
+      [record],
+      "publication-1",
+      "xiaohongshu",
+    )).toThrow(/prediction.*identity/i);
+  });
+
+  it("rejects a prediction created for a different content kind", () => {
+    const record = context("publication-1", "content-old");
+    record.kind = "image_text";
 
     expect(() => resolvePublicationContext(
       [record],

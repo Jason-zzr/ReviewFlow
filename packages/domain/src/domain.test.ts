@@ -101,6 +101,20 @@ describe("prediction and retro", () => {
     expect(prediction.ranges.views?.p50).toBeGreaterThan(1_000);
   });
 
+  it("preserves the requested content kind in the prediction contract", () => {
+    const prediction = buildPrediction({
+      id: "prediction-kind",
+      contentId: "content-1",
+      platform: "xiaohongshu",
+      accountId: "account-1",
+      kind: "image_text",
+      history: [],
+      benchmarks: [],
+    });
+
+    expect(prediction.kind).toBe("image_text");
+  });
+
   it("uses only history from the requested account-platform-kind context", () => {
     const contextualHistory = [
       ...[1_000, 1_000, 1_000].map((views, index) => ({
@@ -256,6 +270,21 @@ describe("prediction and retro", () => {
     expect(() => {
       if (prediction.ranges.views) prediction.ranges.views.p50 = 999_999;
     }).toThrow(TypeError);
+  });
+
+  it("rejects an invalid or timezone-naive prediction freeze time", () => {
+    const prediction = buildPrediction({
+      id: "prediction-invalid-freeze-time",
+      contentId: "content-1",
+      platform: "bilibili",
+      accountId: "account-1",
+      kind: "video",
+      history,
+      benchmarks: [],
+    });
+
+    expect(() => freezePrediction(prediction, "not-a-date")).toThrow(/freeze time/i);
+    expect(() => freezePrediction(prediction, "2026-01-01T00:00:00")).toThrow(/timezone/i);
   });
 
   it("rejects retrospective before T+3", () => {

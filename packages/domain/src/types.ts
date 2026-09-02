@@ -109,6 +109,7 @@ export interface Prediction {
   contentId: string;
   platform: Platform;
   accountId: string;
+  kind: ContentKind;
   ranges: Partial<Record<MetricName, MetricRange>>;
   bucketProbabilities: BucketProbability[];
   confidence: "low" | "medium" | "high";

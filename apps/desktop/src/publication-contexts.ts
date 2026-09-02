@@ -17,6 +17,20 @@ export interface PublicationContextRecord {
   assessments: DimensionAssessment[];
 }
 
+type PredictionContextIdentity = Pick<
+  PublicationContextRecord,
+  "contentId" | "platform" | "accountId" | "kind"
+>;
+
+export const predictionMatchesContext = (
+  prediction: Prediction,
+  context: PredictionContextIdentity,
+): boolean =>
+  prediction.contentId === context.contentId
+  && prediction.platform === context.platform
+  && prediction.accountId === context.accountId
+  && prediction.kind === context.kind;
+
 export const resolvePublicationContext = (
   records: PublicationContextRecord[],
   publicationId: string,
@@ -26,11 +40,7 @@ export const resolvePublicationContext = (
   if (!record) throw new Error("Confirmed publication context not found");
   if (record.platform !== _platform) throw new Error("Publication context platform does not match");
   if (!record.prediction.frozenAt) throw new Error("Publication context requires a frozen prediction");
-  if (
-    record.prediction.contentId !== record.contentId
-    || record.prediction.platform !== record.platform
-    || record.prediction.accountId !== record.accountId
-  ) {
+  if (!predictionMatchesContext(record.prediction, record)) {
     throw new Error("Prediction identity does not match publication context");
   }
   return record;

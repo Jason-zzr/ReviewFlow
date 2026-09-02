@@ -8,7 +8,14 @@ from pathlib import Path
 from shutil import which
 import sys
 
-from ..models import AdapterCapability, Platform, PlatformVariant
+from ..models import (
+    AdapterCapability,
+    MetricFetchRequest,
+    MetricFetchResult,
+    Platform,
+    PlatformVariant,
+    PublicationStatus,
+)
 
 
 class ExecutionCondition(str, Enum):
@@ -34,6 +41,12 @@ class PublisherAdapter(ABC):
     def capability(self) -> AdapterCapability: ...
 
     @abstractmethod
+    async def login(self, account: str, *, headed: bool = False) -> ExecutionResult: ...
+
+    @abstractmethod
+    async def check(self, account: str) -> ExecutionResult: ...
+
+    @abstractmethod
     def validate(self, variant: PlatformVariant) -> list[str]: ...
 
     @abstractmethod
@@ -41,6 +54,12 @@ class PublisherAdapter(ABC):
 
     @abstractmethod
     async def publish(self, variant: PlatformVariant) -> ExecutionResult: ...
+
+    @abstractmethod
+    def status(self, external_ref: str) -> PublicationStatus: ...
+
+    @abstractmethod
+    def fetch_metrics(self, request: MetricFetchRequest) -> MetricFetchResult: ...
 
     def runtime_executable(self) -> str | None:
         configured = os.getenv("REVIEWFLOW_SAU_EXECUTABLE")

@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import Ajv from "ajv";
 import { buildDiagnosticsSnapshot } from "./diagnostics-export.js";
 import { importMediaFiles, isManagedMediaPath } from "./media-library.js";
+import { isAllowedSidecarPath } from "./sidecar-request-policy.js";
 import { loadWorkspacePayload, saveWorkspacePayload } from "./workspace-store.js";
 import { exportWorkspaceBundle, importWorkspaceBundle } from "./workspace-transfer.js";
 
@@ -307,21 +308,6 @@ const createWindow = (): void => {
   if (process.env.VITE_DEV_SERVER_URL) void window.loadURL(process.env.VITE_DEV_SERVER_URL);
   else void window.loadFile(join(moduleDir, "../dist/index.html"));
 };
-
-const isAllowedSidecarPath = (path: string): boolean =>
-  [
-    "/health",
-    "/v1/adapters",
-    "/v1/accounts/check",
-    "/v1/publish/preview",
-    "/v1/publish/execute",
-    "/v1/metrics/import",
-    "/v1/metrics/schedule",
-    "/v1/metrics/fetch",
-  ].includes(path)
-  || /^\/v1\/publications\/[a-zA-Z0-9._-]+$/.test(path)
-  || /^\/v1\/publications\/[a-zA-Z0-9._-]+\/confirm$/.test(path)
-  || /^\/v1\/metrics\/latest\/[a-zA-Z0-9._-]+$/.test(path);
 
 app.whenReady().then(() => {
   startSidecar();

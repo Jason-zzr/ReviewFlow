@@ -11,7 +11,7 @@
 - [ ] Confirm the installer contains `reviewflow-sidecar.exe` and `reviewflow-sau.exe`.
 - [ ] Record SHA-256 hashes for the installer and embedded publisher executables.
 
-The Windows CI `verify` job enforces publisher dependency provenance, `npm.cmd run check`, and the high-severity npm audit. Its dependent `windows-release` job runs the same `npm.cmd run package:win` command used locally, exercises `scripts/smoke-installed-release.ps1` in a guarded temporary directory with a minimal system `PATH`, fails if any required embedded executable is missing, and uploads the installer, blockmap, and `release-sha256.txt` for 14 days. A green hosted run is release evidence, but does not replace the manual UI or real-platform checks below.
+The Windows CI `verify` job enforces publisher dependency provenance, `npm.cmd run check`, and the high-severity npm audit. Its dependent `windows-release` job runs the same `npm.cmd run package:win` command used locally, exercises `scripts/smoke-installed-release.ps1` in a guarded temporary directory with a minimal system `PATH`, fails if any required embedded executable is missing, and uploads the installer, blockmap, all three embedded publisher executables, and `release-sha256.txt` for 14 days. A green hosted run is release evidence, but does not replace the manual UI or real-platform checks below.
 
 ## Clean Windows verification
 

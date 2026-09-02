@@ -9,12 +9,12 @@ The first release supports Xiaohongshu, Douyin, and Bilibili through a guarded a
 ## What works
 
 - Equal-weight seven-dimension starter rubric with evidence and exact, unique dimension coverage for every score.
-- Independent account × platform × content-type interval predictions that domain-filter and deduplicate contextual history, ignore unusable metric rows, fall back to benchmarks, and report valid sample-size confidence.
+- Independent account × platform × content-type interval predictions that persist their content kind, domain-filter and deduplicate contextual history, ignore unusable metric rows, fall back to benchmarks, and report valid sample-size confidence.
 - Deep-frozen predictions and SHA-256 publish manifests whose idempotency keys are digest-bound and atomically claimed before any uploader starts.
 - Resumable SQLite T+3 collection queue with atomic leases, manual/CSV metric snapshots, and Bilibili public metric collection.
 - A local 30-day validation tracker for the eight-publication target and due-only T+3 retrospective completion rate.
 - Ten-sample, same-context rubric experiments with unique one-to-one retrospective linkage, complete-sample validation, tie-aware correlations, strict pairwise non-regression, and explicit activation.
-- Restart recovery for the immutable publish manifest, all Sidecar publication jobs, T+3 task states, and each publication's frozen prediction/score context.
+- Restart recovery for the immutable publish manifest, all Sidecar publication jobs, T+3 task states, and each publication's frozen prediction/score context through an exact Electron request allowlist.
 - Electron `safeStorage` for BYOK credentials; the renderer never receives stored API keys.
 - Portable workspace bundles include managed media, verify SHA-256 integrity on import, and retain legacy JSON import compatibility.
 - Credential-free diagnostic export built from an exact, regression-tested field allowlist.
@@ -75,7 +75,7 @@ npm.cmd run package:win
 ```
 
 The build creates and uses a project-local Python 3.10 environment; an installed ReviewFlow application does not require system Python.
-The Windows CI uses the same release command after the complete quality gate, verifies the pinned publisher provenance, smoke-tests a temporary installation without system Python, and uploads the installer with a SHA-256 manifest covering the installer and all three embedded publisher executables.
+The Windows CI uses the same release command after the complete quality gate, verifies the pinned publisher provenance, smoke-tests a temporary installation without system Python, and uploads the installer, all three embedded publisher executables, and their SHA-256 manifest as one independently verifiable artifact.
 
 Workspace export creates a portable folder containing `workspace.reviewflow.json` and a `media` directory. Move the whole folder together; import the manifest file on the destination machine. API keys, Cookies, publisher credentials, and local database files are never included.
 

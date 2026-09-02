@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterator
@@ -18,11 +19,25 @@ from .models import (
     PublishJob,
 )
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 
 class IdempotencyConflict(ValueError):
     pass
+
+
+class MetricScheduleConflict(ValueError):
+    pass
+
+
+class StaleMetricClaim(RuntimeError):
+    pass
+
+
+@dataclass(frozen=True)
+class MetricTaskClaim:
+    task: MetricCollectionTask
+    token: str
 
 
 class Store:
@@ -57,6 +72,7 @@ class Store:
                 1: self._migrate_to_v1,
                 2: self._migrate_to_v2,
                 3: self._migrate_to_v3,
+                4: self._migrate_to_v4,
             }
             while current < SCHEMA_VERSION:
                 target = current + 1
@@ -145,6 +161,17 @@ class Store:
         )
 
     @staticmethod
+    def _migrate_to_v4(connection: sqlite3.Connection) -> None:
+        columns = {
+            row["name"]
+            for row in connection.execute("PRAGMA table_info(metric_collection_queue)").fetchall()
+        }
+        if not columns:
+            raise RuntimeError("Publisher schema v3 is missing metric_collection_queue")
+        if "claim_token" not in columns:
+            connection.execute("ALTER TABLE metric_collection_queue ADD COLUMN claim_token TEXT")
+
+    @staticmethod
     def _validate_current_schema(connection: sqlite3.Connection) -> None:
         required_columns = {
             "publish_jobs": {
@@ -156,7 +183,7 @@ class Store:
             },
             "metric_collection_queue": {
                 "id", "platform", "publication_id", "external_ref", "published_at", "due_at",
-                "next_attempt_at", "status", "attempts", "last_error",
+                "next_attempt_at", "status", "attempts", "last_error", "claim_token",
             },
         }
         for table, expected in required_columns.items():
@@ -192,20 +219,39 @@ class Store:
             ).fetchall()
         return [self._row_to_job(row) for row in rows]
 
-    def confirmed_publication_exists(self, publication_id: str) -> bool:
+    def confirmed_publication_evidence(self, publication_id: str) -> dict | None:
         job_id, separator, platform = publication_id.rpartition(":")
         if not separator or not job_id or not platform:
-            return False
+            return None
         job = self.get_job(job_id)
         if job is None or job.dryRun:
-            return False
+            return None
         results = job.details.get("results")
-        return isinstance(results, list) and any(
-            isinstance(item, dict)
+        if not isinstance(results, list):
+            return None
+        return next((
+            item
+            for item in results
+            if isinstance(item, dict)
             and item.get("platform") == platform
             and item.get("operatorVerified") is True
             and item.get("status") == PublicationStatus.published.value
-            for item in results
+        ), None)
+
+    def confirmed_publication_exists(self, publication_id: str) -> bool:
+        return self.confirmed_publication_evidence(publication_id) is not None
+
+    def confirmed_publication_matches(
+        self,
+        publication_id: str,
+        platform: Platform,
+        external_ref: str,
+    ) -> bool:
+        evidence = self.confirmed_publication_evidence(publication_id)
+        return bool(
+            evidence
+            and evidence.get("platform") == platform.value
+            and evidence.get("externalRef") == external_ref
         )
 
     def create_job(
@@ -289,8 +335,9 @@ class Store:
             raise KeyError(job_id)
         return job
 
-    def import_metrics(self, request: MetricImportRequest) -> MetricSnapshot:
-        snapshot = MetricSnapshot(
+    @staticmethod
+    def _build_metric_snapshot(request: MetricImportRequest) -> MetricSnapshot:
+        return MetricSnapshot(
             id=str(uuid4()),
             publicationId=request.publicationId,
             capturedAt=datetime.now(timezone.utc),
@@ -298,20 +345,52 @@ class Store:
             metrics=request.metrics,
             raw=request.raw,
         )
+
+    @staticmethod
+    def _insert_metric_snapshot(
+        connection: sqlite3.Connection,
+        snapshot: MetricSnapshot,
+    ) -> None:
+        connection.execute(
+            """INSERT INTO metric_snapshots
+            (id, publication_id, captured_at, source, metrics_json, raw_json)
+            VALUES (?, ?, ?, ?, ?, ?)""",
+            (
+                snapshot.id,
+                snapshot.publicationId,
+                snapshot.capturedAt.isoformat(),
+                snapshot.source,
+                snapshot.metrics.model_dump_json(),
+                json.dumps(snapshot.raw, ensure_ascii=False) if snapshot.raw is not None else None,
+            ),
+        )
+
+    def import_metrics(self, request: MetricImportRequest) -> MetricSnapshot:
+        snapshot = self._build_metric_snapshot(request)
         with self.connect() as connection:
-            connection.execute(
-                """INSERT INTO metric_snapshots
-                (id, publication_id, captured_at, source, metrics_json, raw_json)
-                VALUES (?, ?, ?, ?, ?, ?)""",
-                (
-                    snapshot.id,
-                    snapshot.publicationId,
-                    snapshot.capturedAt.isoformat(),
-                    snapshot.source,
-                    snapshot.metrics.model_dump_json(),
-                    json.dumps(snapshot.raw, ensure_ascii=False) if snapshot.raw is not None else None,
-                ),
+            self._insert_metric_snapshot(connection, snapshot)
+        return snapshot
+
+    def record_collected_metrics(
+        self,
+        task_id: str,
+        claim_token: str,
+        request: MetricImportRequest,
+    ) -> MetricSnapshot:
+        snapshot = self._build_metric_snapshot(request)
+        now = datetime.now(timezone.utc).isoformat()
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            updated = connection.execute(
+                """UPDATE metric_collection_queue
+                SET status='collected', attempts=attempts+1, last_error=NULL,
+                    next_attempt_at=?, claim_token=NULL
+                WHERE id=? AND claim_token=?""",
+                (now, task_id, claim_token),
             )
+            if updated.rowcount != 1:
+                raise StaleMetricClaim("Metric collection lease is no longer owned by this worker")
+            self._insert_metric_snapshot(connection, snapshot)
         return snapshot
 
     def latest_metrics(self, publication_id: str) -> MetricSnapshot | None:
@@ -359,6 +438,10 @@ class Store:
             and existing.publishedAt.astimezone(timezone.utc) == published_at
         ):
             return existing
+        if existing:
+            raise MetricScheduleConflict(
+                "Metric collection task is already bound to different publication evidence"
+            )
         task = MetricCollectionTask(
             id=str(uuid4()),
             platform=request.platform,
@@ -418,7 +501,7 @@ class Store:
         now: datetime | None = None,
         *,
         lease: timedelta = timedelta(minutes=5),
-    ) -> list[MetricCollectionTask]:
+    ) -> list[MetricTaskClaim]:
         instant = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
         lease_until = instant + lease
         with self.connect() as connection:
@@ -431,17 +514,23 @@ class Store:
             task_ids = [row["id"] for row in rows]
             if not task_ids:
                 return []
+            claim_tokens = {task_id: str(uuid4()) for task_id in task_ids}
+            for task_id, token in claim_tokens.items():
+                connection.execute(
+                    """UPDATE metric_collection_queue
+                    SET next_attempt_at=?, claim_token=?
+                    WHERE status='pending' AND id=?""",
+                    (lease_until.isoformat(), token, task_id),
+                )
             placeholders = ",".join("?" for _ in task_ids)
-            connection.execute(
-                f"""UPDATE metric_collection_queue SET next_attempt_at=?
-                WHERE status='pending' AND id IN ({placeholders})""",
-                (lease_until.isoformat(), *task_ids),
-            )
             claimed = connection.execute(
                 f"SELECT * FROM metric_collection_queue WHERE id IN ({placeholders})",
                 task_ids,
             ).fetchall()
-        return [self._row_to_metric_task(row) for row in claimed]
+        return [
+            MetricTaskClaim(task=self._row_to_metric_task(row), token=claim_tokens[row["id"]])
+            for row in claimed
+        ]
 
     def update_metric_task(
         self,
@@ -450,14 +539,33 @@ class Store:
         *,
         last_error: str | None = None,
         retry_after: timedelta | None = None,
+        claim_token: str | None = None,
     ) -> MetricCollectionTask:
         next_attempt = datetime.now(timezone.utc) + (retry_after or timedelta(0))
         with self.connect() as connection:
-            connection.execute(
-                """UPDATE metric_collection_queue
-                SET status=?, attempts=attempts+1, last_error=?, next_attempt_at=? WHERE id=?""",
-                (status, last_error, next_attempt.isoformat(), task_id),
+            parameters: tuple = (
+                status,
+                last_error,
+                next_attempt.isoformat(),
+                task_id,
             )
+            where = "id=?"
+            if claim_token is not None:
+                where += " AND claim_token=?"
+                parameters += (claim_token,)
+            updated = connection.execute(
+                """UPDATE metric_collection_queue
+                SET status=?, attempts=attempts+1, last_error=?, next_attempt_at=?, claim_token=NULL
+                WHERE """ + where,
+                parameters,
+            )
+            if updated.rowcount != 1:
+                exists = connection.execute(
+                    "SELECT 1 FROM metric_collection_queue WHERE id=?", (task_id,)
+                ).fetchone()
+                if exists is None:
+                    raise KeyError(task_id)
+                raise StaleMetricClaim("Metric collection lease is no longer owned by this worker")
             row = connection.execute(
                 "SELECT * FROM metric_collection_queue WHERE id=?", (task_id,)
             ).fetchone()
