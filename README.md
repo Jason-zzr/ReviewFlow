@@ -17,11 +17,11 @@ The first release supports Xiaohongshu, Douyin, and Bilibili through a guarded a
 - Retrospective reports retain a detached canonical metrics snapshot and show six-metric actual-versus-predicted comparisons, interval hits, relative errors, and the T+3 deadline.
 - A local 30-day validation tracker for the eight-publication target and due-only T+3 retrospective completion rate.
 - Ten-sample, same-context rubric experiments with unique one-to-one retrospective linkage, complete-sample validation, visible weight/correlation comparisons, strict pairwise non-regression, explicit activation, and persisted version/audit history.
-- Restart recovery for the immutable publish manifest, all Sidecar publication jobs, T+3 task states, and each publication's frozen prediction/score context through an exact Electron request allowlist.
+- Restart recovery for the creator workspace, onboarding completion, immutable publish manifest, all Sidecar publication jobs, T+3 task states, and each publication's frozen prediction/score context through an exact Electron request allowlist.
 - Electron `safeStorage` for BYOK credentials; the renderer never receives stored API keys.
 - Portable workspace bundles include managed media, verify SHA-256 integrity on import, and retain legacy JSON import compatibility.
 - Credential-free diagnostic export built from an exact, regression-tested field allowlist.
-- First-run onboarding resumes until its completion state is explicitly persisted.
+- First-run onboarding resumes until its completion state is explicitly persisted; a two-process Electron acceptance test proves that completion and edited content survive a full application restart through the production preload, IPC handlers, and SQLite store.
 - User-selected media is copied into the application-managed local media library; original files are never modified.
 - Authenticated localhost FastAPI sidecar and `reviewflow` CLI.
 - Electron process-tree shutdown plus a Sidecar parent watchdog prevent orphaned publisher runtimes after restart, exit, or crash.
@@ -45,7 +45,7 @@ Run checks:
 npm.cmd run check
 ```
 
-`npm.cmd run check` covers TypeScript type checking, domain/desktop/publisher tests, production builds, and three real-Electron renderer flows for video, image/text, and platform-challenge handling. The video flow imports a quote-aware CSV fixture while the image/text flow verifies manual metric entry. The renderer flows use an isolated fixture preload: they do not read user credentials, contact a platform, or claim live publishing success.
+`npm.cmd run check` covers TypeScript type checking, domain/desktop/publisher tests, production builds, three real-Electron publishing flows for video, image/text, and platform-challenge handling, plus a two-process application-restart flow. The video flow imports a quote-aware CSV fixture while the image/text flow verifies manual metric entry. The publishing flows use an isolated fixture preload; the restart flow imports the production main process and uses the production preload, IPC handlers, and an isolated real SQLite database. None of these flows reads user credentials, contacts a platform, or claims live publishing success.
 
 Core CLI examples:
 
