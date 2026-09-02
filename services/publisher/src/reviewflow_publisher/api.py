@@ -40,9 +40,13 @@ def default_data_path() -> Path:
     return Path.home() / ".reviewflow"
 
 
-def create_app(store: Store | None = None) -> FastAPI:
+def create_app(
+    store: Store | None = None,
+    adapters: AdapterRegistry | None = None,
+) -> FastAPI:
     active_store = store or Store(default_data_path() / "reviewflow.sqlite3")
-    scheduler = MetricScheduler(active_store)
+    active_adapters = adapters or AdapterRegistry()
+    scheduler = MetricScheduler(active_store, active_adapters)
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
@@ -62,8 +66,7 @@ def create_app(store: Store | None = None) -> FastAPI:
         allow_methods=["GET", "POST"],
         allow_headers=["Authorization", "Content-Type"],
     )
-    adapters = AdapterRegistry()
-    service = PublishService(active_store, adapters)
+    service = PublishService(active_store, active_adapters)
 
     def authorized(request: Request) -> None:
         validate_origin(request)
@@ -75,11 +78,11 @@ def create_app(store: Store | None = None) -> FastAPI:
 
     @app.get("/v1/adapters", response_model=list[AdapterCapability], dependencies=[Depends(authorized)])
     def list_adapters() -> list[AdapterCapability]:
-        return adapters.capabilities()
+        return active_adapters.capabilities()
 
     @app.post("/v1/accounts/check", response_model=AccountCheckResult, dependencies=[Depends(authorized)])
     async def check_account(request: AccountCheckRequest) -> AccountCheckResult:
-        adapter = adapters.get(request.platform)
+        adapter = active_adapters.get(request.platform)
         if not adapter.runtime_available():
             return AccountCheckResult(
                 platform=request.platform,
@@ -178,7 +181,7 @@ def create_app(store: Store | None = None) -> FastAPI:
         ):
             raise HTTPException(status_code=409, detail="Confirmed publication evidence does not match")
         try:
-            return adapters.get(request.platform).fetch_metrics(request)
+            return active_adapters.get(request.platform).fetch_metrics(request)
         except ValueError as error:
             raise HTTPException(status_code=422, detail=str(error)) from error
         except Exception as error:
