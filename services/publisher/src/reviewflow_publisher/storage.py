@@ -43,58 +43,133 @@ class Store:
 
     def migrate(self) -> None:
         with self.connect() as connection:
-            connection.executescript(
-                """
-                PRAGMA journal_mode=WAL;
-                PRAGMA foreign_keys=ON;
-                CREATE TABLE IF NOT EXISTS schema_meta (
-                    version INTEGER NOT NULL
-                );
-                CREATE TABLE IF NOT EXISTS publish_jobs (
-                    id TEXT PRIMARY KEY,
-                    manifest_id TEXT NOT NULL,
-                    manifest_digest TEXT NOT NULL,
-                    idempotency_key TEXT NOT NULL UNIQUE,
-                    status TEXT NOT NULL,
-                    dry_run INTEGER NOT NULL,
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL,
-                    details_json TEXT NOT NULL
-                );
-                CREATE TABLE IF NOT EXISTS metric_snapshots (
-                    id TEXT PRIMARY KEY,
-                    publication_id TEXT NOT NULL,
-                    captured_at TEXT NOT NULL,
-                    source TEXT NOT NULL,
-                    metrics_json TEXT NOT NULL,
-                    raw_json TEXT
-                );
-                CREATE TABLE IF NOT EXISTS metric_collection_queue (
-                    id TEXT PRIMARY KEY,
-                    platform TEXT NOT NULL,
-                    publication_id TEXT NOT NULL,
-                    external_ref TEXT NOT NULL,
-                    published_at TEXT NOT NULL,
-                    due_at TEXT NOT NULL,
-                    next_attempt_at TEXT NOT NULL,
-                    status TEXT NOT NULL,
-                    attempts INTEGER NOT NULL DEFAULT 0,
-                    last_error TEXT,
-                    UNIQUE(platform, publication_id)
-                );
-                """
-            )
-            current = connection.execute("SELECT version FROM schema_meta LIMIT 1").fetchone()
-            if current is None:
-                connection.execute("INSERT INTO schema_meta(version) VALUES (?)", (SCHEMA_VERSION,))
-            columns = {
-                row["name"] for row in connection.execute("PRAGMA table_info(publish_jobs)").fetchall()
-            }
-            if "manifest_digest" not in columns:
-                connection.execute(
-                    "ALTER TABLE publish_jobs ADD COLUMN manifest_digest TEXT NOT NULL DEFAULT ''"
+            connection.execute("PRAGMA journal_mode=WAL")
+            connection.execute("PRAGMA foreign_keys=ON")
+            connection.execute("BEGIN IMMEDIATE")
+            current = self._read_schema_version(connection)
+            if current > SCHEMA_VERSION:
+                raise RuntimeError(
+                    "Database uses a newer schema version "
+                    f"({current}); this application supports up to {SCHEMA_VERSION}"
                 )
-            connection.execute("UPDATE schema_meta SET version = ?", (SCHEMA_VERSION,))
+
+            migrations = {
+                1: self._migrate_to_v1,
+                2: self._migrate_to_v2,
+                3: self._migrate_to_v3,
+            }
+            while current < SCHEMA_VERSION:
+                target = current + 1
+                migrations[target](connection)
+                connection.execute("UPDATE schema_meta SET version = ?", (target,))
+                current = target
+
+            self._validate_current_schema(connection)
+
+    @staticmethod
+    def _read_schema_version(connection: sqlite3.Connection) -> int:
+        schema_meta_exists = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='schema_meta'"
+        ).fetchone()
+        if schema_meta_exists is None:
+            existing_tables = {
+                row["name"]
+                for row in connection.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                ).fetchall()
+            }
+            if existing_tables:
+                raise RuntimeError("Database has an unversioned schema and cannot be migrated safely")
+            connection.execute("CREATE TABLE schema_meta (version INTEGER NOT NULL)")
+            connection.execute("INSERT INTO schema_meta(version) VALUES (0)")
+            return 0
+
+        rows = connection.execute("SELECT version FROM schema_meta").fetchall()
+        if len(rows) != 1 or type(rows[0]["version"]) is not int or rows[0]["version"] < 0:
+            raise RuntimeError("Database schema metadata is invalid")
+        return rows[0]["version"]
+
+    @staticmethod
+    def _migrate_to_v1(connection: sqlite3.Connection) -> None:
+        connection.execute(
+            """CREATE TABLE publish_jobs (
+                id TEXT PRIMARY KEY,
+                manifest_id TEXT NOT NULL,
+                idempotency_key TEXT NOT NULL UNIQUE,
+                status TEXT NOT NULL,
+                dry_run INTEGER NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                details_json TEXT NOT NULL
+            )"""
+        )
+        connection.execute(
+            """CREATE TABLE metric_snapshots (
+                id TEXT PRIMARY KEY,
+                publication_id TEXT NOT NULL,
+                captured_at TEXT NOT NULL,
+                source TEXT NOT NULL,
+                metrics_json TEXT NOT NULL,
+                raw_json TEXT
+            )"""
+        )
+
+    @staticmethod
+    def _migrate_to_v2(connection: sqlite3.Connection) -> None:
+        columns = {
+            row["name"] for row in connection.execute("PRAGMA table_info(publish_jobs)").fetchall()
+        }
+        if not columns:
+            raise RuntimeError("Publisher schema v1 is missing publish_jobs")
+        if "manifest_digest" not in columns:
+            connection.execute(
+                "ALTER TABLE publish_jobs ADD COLUMN manifest_digest TEXT NOT NULL DEFAULT ''"
+            )
+
+    @staticmethod
+    def _migrate_to_v3(connection: sqlite3.Connection) -> None:
+        connection.execute(
+            """CREATE TABLE IF NOT EXISTS metric_collection_queue (
+                id TEXT PRIMARY KEY,
+                platform TEXT NOT NULL,
+                publication_id TEXT NOT NULL,
+                external_ref TEXT NOT NULL,
+                published_at TEXT NOT NULL,
+                due_at TEXT NOT NULL,
+                next_attempt_at TEXT NOT NULL,
+                status TEXT NOT NULL,
+                attempts INTEGER NOT NULL DEFAULT 0,
+                last_error TEXT,
+                UNIQUE(platform, publication_id)
+            )"""
+        )
+
+    @staticmethod
+    def _validate_current_schema(connection: sqlite3.Connection) -> None:
+        required_columns = {
+            "publish_jobs": {
+                "id", "manifest_id", "manifest_digest", "idempotency_key", "status",
+                "dry_run", "created_at", "updated_at", "details_json",
+            },
+            "metric_snapshots": {
+                "id", "publication_id", "captured_at", "source", "metrics_json", "raw_json",
+            },
+            "metric_collection_queue": {
+                "id", "platform", "publication_id", "external_ref", "published_at", "due_at",
+                "next_attempt_at", "status", "attempts", "last_error",
+            },
+        }
+        for table, expected in required_columns.items():
+            actual = {
+                row["name"]
+                for row in connection.execute(f"PRAGMA table_info({table})").fetchall()
+            }
+            missing = expected - actual
+            if missing:
+                raise RuntimeError(
+                    f"Publisher schema v{SCHEMA_VERSION} table {table} is missing columns: "
+                    + ", ".join(sorted(missing))
+                )
 
     def get_job_by_idempotency(self, key: str) -> PublishJob | None:
         with self.connect() as connection:

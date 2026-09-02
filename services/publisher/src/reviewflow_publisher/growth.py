@@ -1,15 +1,17 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from math import isfinite
 from statistics import median
 from typing import Any
 
 DIMENSION_CODES = ("ER", "HP", "QL", "NA", "AB", "SR", "SAT")
+METRIC_NAMES = ("views", "likes", "saves", "comments", "shares", "followersGained")
 
 
 def score_assessments(assessments: list[dict[str, Any]]) -> dict[str, Any]:
     by_code = {item.get("code"): item for item in assessments}
-    if set(by_code) != set(DIMENSION_CODES):
+    if len(assessments) != len(DIMENSION_CODES) or set(by_code) != set(DIMENSION_CODES):
         raise ValueError("Assessments must contain each starter dimension exactly once")
     scores: list[int] = []
     for code in DIMENSION_CODES:
@@ -23,20 +25,50 @@ def score_assessments(assessments: list[dict[str, Any]]) -> dict[str, Any]:
     return {"composite": round(sum(scores) / len(scores) * 2, 2), "assessments": assessments}
 
 
-def predict_views(history: list[dict[str, Any]], score: float | None = None) -> dict[str, Any]:
-    values = [row["views"] for row in history if isinstance(row.get("views"), int) and row["views"] >= 0]
+def _usable_metric(value: Any) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and isfinite(value) and value >= 0
+
+
+def _usable_row(row: dict[str, Any]) -> bool:
+    return any(_usable_metric(row.get(metric)) for metric in METRIC_NAMES)
+
+
+def predict_views(
+    history: list[dict[str, Any]],
+    score: float | None = None,
+    benchmarks: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    if score is not None and (
+        not isinstance(score, (int, float))
+        or isinstance(score, bool)
+        or not isfinite(score)
+        or not 0 <= score <= 10
+    ):
+        raise ValueError("Content score must be finite and between 0 and 10")
+    valid_history = [row for row in history if _usable_row(row)]
+    valid_benchmarks = [row for row in (benchmarks or []) if _usable_row(row)]
+    if len(valid_history) >= 3:
+        baseline_source = "account_history"
+        source_rows = valid_history
+    elif valid_benchmarks:
+        baseline_source = "benchmarks"
+        source_rows = valid_benchmarks
+    else:
+        baseline_source = "cold_start"
+        source_rows = []
+    values = [row["views"] for row in source_rows if _usable_metric(row.get("views"))]
+    sample_size = len(source_rows)
     if not values:
         return {
-            "baselineSource": "cold_start",
-            "sampleSize": 0,
-            "confidence": "low",
+            "baselineSource": baseline_source,
+            "sampleSize": sample_size,
+            "confidence": "high" if sample_size >= 20 else "medium" if sample_size >= 10 else "low",
             "views": {"p10": 100, "p50": 1000, "p90": 10000},
         }
     uplift = 1 if score is None else min(1.45, max(0.65, 0.72 + score * 0.065))
     center = median(values) * uplift
-    sample_size = len(values)
     return {
-        "baselineSource": "account_history",
+        "baselineSource": baseline_source,
         "sampleSize": sample_size,
         "confidence": "high" if sample_size >= 20 else "medium" if sample_size >= 10 else "low",
         "views": {"p10": round(center * 0.35), "p50": round(center), "p90": round(center * 3)},

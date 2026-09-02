@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
+from typer.testing import CliRunner
 
 from reviewflow_publisher.api import create_app
+from reviewflow_publisher.cli import app
 from reviewflow_publisher.digests import manifest_digest
 from reviewflow_publisher.models import MetricScheduleRequest, PublishManifest
 from reviewflow_publisher.metrics import fetch_metrics
@@ -217,6 +220,46 @@ def test_cli_growth_rules_match_starter_contract():
     prediction = predict_views([{"views": 1000}] * 10, score=8)
     assert prediction["confidence"] == "medium"
     assert prediction["views"]["p50"] > 1000
+
+
+def test_cli_scoring_rejects_duplicate_dimensions():
+    assessments = [
+        {"code": code, "score": 4, "evidence": "evidence"}
+        for code in ("ER", "HP", "QL", "NA", "AB", "SR", "SAT")
+    ]
+    assessments.append({"code": "ER", "score": 5, "evidence": "duplicate"})
+    with pytest.raises(ValueError, match="exactly once"):
+        score_assessments(assessments)
+
+
+def test_cli_prediction_falls_back_to_valid_benchmarks():
+    prediction = predict_views(
+        [{"views": None}, {"views": float("nan")}, {"views": -1}],
+        benchmarks=[{"views": 1_000}, {"views": 2_000}],
+    )
+    assert prediction["baselineSource"] == "benchmarks"
+    assert prediction["sampleSize"] == 2
+    assert prediction["views"]["p50"] == 1_500
+
+
+def test_content_predict_cli_accepts_history_and_benchmark_payload(tmp_path: Path):
+    input_file = tmp_path / "prediction-input.json"
+    input_file.write_text(json.dumps({
+        "history": [{"views": None}, {"views": -1}, {"likes": -1}],
+        "benchmarks": [{"views": 1_000}, {"views": 2_000}],
+    }), encoding="utf-8")
+
+    result = CliRunner().invoke(app, ["content", "predict", str(input_file)])
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["baselineSource"] == "benchmarks"
+    assert payload["sampleSize"] == 2
+
+
+def test_cli_prediction_rejects_a_non_finite_content_score():
+    with pytest.raises(ValueError, match="finite.*0.*10"):
+        predict_views([{"views": 1_000}] * 3, score=float("nan"))
 
 
 def test_cli_retro_enforces_t_plus_three():

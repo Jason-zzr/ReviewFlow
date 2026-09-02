@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import sqlite3
+import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -216,6 +217,42 @@ def test_cli_preview_uses_service_level_manifest_rules(tmp_path: Path) -> None:
     assert any("不能重复同一平台" in warning for warning in payload["warnings"])
 
 
+def test_account_check_redacts_child_process_output_and_preserves_exit_code(monkeypatch) -> None:
+    class FakeAccountAdapter:
+        @staticmethod
+        def runtime_executable() -> str:
+            return "reviewflow-sau"
+
+        @staticmethod
+        def account_command(action: str, account: str) -> list[str]:
+            return ["sau", "xiaohongshu", action, "--account", account]
+
+    class FakeAccountRegistry:
+        @staticmethod
+        def get(_platform: Platform) -> FakeAccountAdapter:
+            return FakeAccountAdapter()
+
+    def fake_run(command: list[str], **kwargs) -> subprocess.CompletedProcess[str]:
+        if not kwargs.get("capture_output"):
+            print("Authorization: Bearer secret-account-token")
+        return subprocess.CompletedProcess(
+            command,
+            23,
+            stdout="Authorization: Bearer secret-account-token\n",
+            stderr=r"browser failed at C:\Users\creator\cookies\xiaohongshu.json",
+        )
+
+    monkeypatch.setattr("reviewflow_publisher.cli.AdapterRegistry", FakeAccountRegistry)
+    monkeypatch.setattr("reviewflow_publisher.cli.subprocess.run", fake_run)
+    result = CliRunner().invoke(app, ["account", "check", "xiaohongshu", "creator"])
+
+    assert result.exit_code == 23
+    assert "secret-account-token" not in result.output
+    assert r"C:\Users\creator" not in result.output
+    assert "[REDACTED]" in result.output
+    assert "[REDACTED_COOKIE_PATH]" in result.output
+
+
 def test_bilibili_capability_matches_automatic_metric_collection() -> None:
     assert SauAdapter(Platform.bilibili).capability().supportsAutomaticMetrics is True
     assert SauAdapter(Platform.xiaohongshu).capability().supportsAutomaticMetrics is False
@@ -252,6 +289,90 @@ def test_publisher_store_records_its_schema_version(tmp_path: Path) -> None:
     with sqlite3.connect(database_path) as connection:
         version = connection.execute("SELECT version FROM schema_meta LIMIT 1").fetchone()
     assert version == (SCHEMA_VERSION,)
+
+
+def test_publisher_store_migrates_v1_without_losing_publish_jobs(tmp_path: Path) -> None:
+    database_path = tmp_path / "schema-v1.sqlite3"
+    with sqlite3.connect(database_path) as connection:
+        connection.executescript(
+            """
+            CREATE TABLE schema_meta (version INTEGER NOT NULL);
+            INSERT INTO schema_meta(version) VALUES (1);
+            CREATE TABLE publish_jobs (
+                id TEXT PRIMARY KEY,
+                manifest_id TEXT NOT NULL,
+                idempotency_key TEXT NOT NULL UNIQUE,
+                status TEXT NOT NULL,
+                dry_run INTEGER NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                details_json TEXT NOT NULL
+            );
+            CREATE TABLE metric_snapshots (
+                id TEXT PRIMARY KEY,
+                publication_id TEXT NOT NULL,
+                captured_at TEXT NOT NULL,
+                source TEXT NOT NULL,
+                metrics_json TEXT NOT NULL,
+                raw_json TEXT
+            );
+            INSERT INTO publish_jobs (
+                id, manifest_id, idempotency_key, status, dry_run,
+                created_at, updated_at, details_json
+            ) VALUES (
+                'job-v1', 'manifest-v1', 'stable-v1-key', 'unknown', 0,
+                '2026-01-01T00:00:00+00:00', '2026-01-01T00:00:00+00:00',
+                '{"source":"v1"}'
+            );
+            """
+        )
+
+    store = Store(database_path)
+    job = store.get_job_by_idempotency("stable-v1-key")
+    assert job is not None
+    assert job.id == "job-v1"
+    assert job.manifestDigest == ""
+    assert job.details == {"source": "v1"}
+    with sqlite3.connect(database_path) as connection:
+        version = connection.execute("SELECT version FROM schema_meta LIMIT 1").fetchone()
+        queue_table = connection.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='metric_collection_queue'"
+        ).fetchone()
+    assert version == (SCHEMA_VERSION,)
+    assert queue_table == ("metric_collection_queue",)
+
+
+def test_publisher_store_rejects_a_newer_schema_without_downgrading_it(tmp_path: Path) -> None:
+    database_path = tmp_path / "schema-future.sqlite3"
+    future_version = SCHEMA_VERSION + 1
+    with sqlite3.connect(database_path) as connection:
+        connection.execute("CREATE TABLE schema_meta (version INTEGER NOT NULL)")
+        connection.execute("INSERT INTO schema_meta(version) VALUES (?)", (future_version,))
+
+    with pytest.raises(RuntimeError, match="newer schema version"):
+        Store(database_path)
+
+    with sqlite3.connect(database_path) as connection:
+        version = connection.execute("SELECT version FROM schema_meta LIMIT 1").fetchone()
+    assert version == (future_version,)
+
+
+def test_publisher_store_resumes_a_partially_applied_migration(tmp_path: Path) -> None:
+    database_path = tmp_path / "schema-partial-v3.sqlite3"
+    Store(database_path)
+    with sqlite3.connect(database_path) as connection:
+        connection.execute("UPDATE schema_meta SET version = 2")
+
+    Store(database_path)
+
+    with sqlite3.connect(database_path) as connection:
+        version = connection.execute("SELECT version FROM schema_meta LIMIT 1").fetchone()
+        queue_count = connection.execute(
+            "SELECT COUNT(*) FROM sqlite_master "
+            "WHERE type='table' AND name='metric_collection_queue'"
+        ).fetchone()
+    assert version == (SCHEMA_VERSION,)
+    assert queue_count == (1,)
 
 
 class FakeAdapter:

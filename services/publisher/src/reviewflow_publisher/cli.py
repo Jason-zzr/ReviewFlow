@@ -12,6 +12,7 @@ from .adapters import AdapterRegistry
 from .digests import manifest_digest
 from .models import Platform, PublishExecuteRequest, PublishManifest
 from .growth import build_retro, predict_views, score_assessments
+from .security import redact
 from .service import PublishService
 from .storage import Store
 
@@ -26,6 +27,15 @@ app.add_typer(retro_app, name="retro")
 app.add_typer(content_app, name="content")
 
 
+def run_account_command(command: list[str]) -> None:
+    result = subprocess.run(command, check=False, capture_output=True, text=True)
+    if result.stdout:
+        typer.echo(redact(result.stdout), nl=not result.stdout.endswith("\n"))
+    if result.stderr:
+        typer.echo(redact(result.stderr), err=True, nl=not result.stderr.endswith("\n"))
+    raise typer.Exit(code=result.returncode)
+
+
 @content_app.command("score")
 def content_score(input_file: Path) -> None:
     payload = json.loads(input_file.read_text(encoding="utf-8"))
@@ -34,8 +44,24 @@ def content_score(input_file: Path) -> None:
 
 @content_app.command("predict")
 def content_predict(history_file: Path, score: float | None = None) -> None:
-    history = json.loads(history_file.read_text(encoding="utf-8"))
-    typer.echo(json.dumps(predict_views(history, score), ensure_ascii=False, indent=2))
+    payload = json.loads(history_file.read_text(encoding="utf-8"))
+    if isinstance(payload, list):
+        history = payload
+        benchmarks: list[dict] = []
+    elif isinstance(payload, dict):
+        history = payload.get("history", [])
+        benchmarks = payload.get("benchmarks", [])
+    else:
+        raise typer.BadParameter("Prediction input must be a history array or an object")
+    if not isinstance(history, list) or not all(isinstance(row, dict) for row in history):
+        raise typer.BadParameter("Prediction history must be an array of metric objects")
+    if not isinstance(benchmarks, list) or not all(isinstance(row, dict) for row in benchmarks):
+        raise typer.BadParameter("Prediction benchmarks must be an array of metric objects")
+    typer.echo(json.dumps(
+        predict_views(history, score, benchmarks),
+        ensure_ascii=False,
+        indent=2,
+    ))
 
 
 @account_app.command("check")
@@ -46,8 +72,7 @@ def account_check(platform: Platform, account: str) -> None:
         raise typer.BadParameter("Pinned omnipost runtime is not installed")
     command = adapter.account_command("check", account)
     command[0] = executable
-    result = subprocess.run(command, check=False)
-    raise typer.Exit(code=result.returncode)
+    run_account_command(command)
 
 
 @account_app.command("login")
@@ -64,8 +89,7 @@ def account_login(
         raise typer.BadParameter("Pinned omnipost runtime is not installed")
     command = adapter.account_command("login", account, headed=headed)
     command[0] = executable
-    result = subprocess.run(command, check=False)
-    raise typer.Exit(code=result.returncode)
+    run_account_command(command)
 
 
 def load_manifest(path: Path) -> PublishManifest:
