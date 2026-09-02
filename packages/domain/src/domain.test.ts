@@ -32,6 +32,14 @@ describe("scoring", () => {
     invalid[0]!.score = 5.5;
     expect(() => calculateComposite(createStarterRubric().dimensions, invalid)).toThrow(RangeError);
   });
+
+  it("rejects a rubric with duplicate dimension codes", () => {
+    const dimensions = createStarterRubric().dimensions.map((item) => ({ ...item }));
+    dimensions[1] = { ...dimensions[0]! };
+    const duplicateAssessments = assessments.map((item) => ({ ...item }));
+    duplicateAssessments[1]!.code = duplicateAssessments[0]!.code;
+    expect(() => calculateComposite(dimensions, duplicateAssessments)).toThrow(/unique/i);
+  });
 });
 
 describe("prediction and retro", () => {
@@ -58,6 +66,53 @@ describe("prediction and retro", () => {
     expect(prediction.baselineSource).toBe("account_history");
     expect(prediction.confidence).toBe("medium");
     expect(prediction.ranges.views?.p50).toBeGreaterThan(1_000);
+  });
+
+  it("falls back to valid benchmarks when account history has no usable metrics", () => {
+    const emptyMetrics = (): NormalizedMetrics => ({
+      views: null,
+      likes: null,
+      saves: null,
+      comments: null,
+      shares: null,
+      followersGained: null,
+    });
+    const prediction = buildPrediction({
+      id: "prediction-valid-baseline",
+      contentId: "content-1",
+      platform: "xiaohongshu",
+      accountId: "account-1",
+      kind: "video",
+      history: [
+        emptyMetrics(),
+        { ...emptyMetrics(), views: Number.NaN },
+        { ...emptyMetrics(), likes: -1 },
+      ],
+      benchmarks: [1_000, 2_000].map((views, index) => ({
+        id: `benchmark-${index}`,
+        platform: "xiaohongshu" as const,
+        kind: "video" as const,
+        title: `对标 ${index}`,
+        metrics: { ...emptyMetrics(), views },
+        importedAt: "2026-01-01T00:00:00.000Z",
+      })),
+    });
+    expect(prediction.baselineSource).toBe("benchmarks");
+    expect(prediction.baselineSampleSize).toBe(2);
+    expect(prediction.ranges.views?.p50).toBe(1_500);
+  });
+
+  it("rejects a non-finite content score before building ranges", () => {
+    expect(() => buildPrediction({
+      id: "prediction-invalid-score",
+      contentId: "content-1",
+      platform: "douyin",
+      accountId: "account-1",
+      kind: "video",
+      history,
+      benchmarks: [],
+      scoreComposite: Number.NaN,
+    })).toThrow(/finite.*0.*10/i);
   });
 
   it("requires a frozen prediction before retrospective", () => {

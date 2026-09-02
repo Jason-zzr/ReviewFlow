@@ -30,6 +30,7 @@ import PredictionTape from "./components/PredictionTape.vue";
 import PublishDialog from "./components/PublishDialog.vue";
 import ScoreLedger from "./components/ScoreLedger.vue";
 import OnboardingDialog from "./components/OnboardingDialog.vue";
+import { recoverOnboardingState } from "./onboarding-state.js";
 
 type ViewName = "today" | "studio" | "retro" | "benchmarks" | "accounts" | "settings";
 
@@ -819,7 +820,8 @@ onMounted(async () => {
         onboardingComplete?: boolean;
         lastPublishJobId?: string;
       } | null;
-      onboardingOpen.value = !saved;
+      const recoveredOnboarding = recoverOnboardingState(saved);
+      onboardingOpen.value = recoveredOnboarding.open;
       if (saved?.content) content.value = saved.content;
       if (saved?.scoreCard) {
         scoreCard.value = saved.scoreCard;
@@ -859,7 +861,7 @@ onMounted(async () => {
           });
         }
       }
-      onboardingComplete.value = Boolean(saved?.onboardingComplete);
+      onboardingComplete.value = recoveredOnboarding.complete;
       for (let attempt = 0; attempt < 24; attempt += 1) {
         const runtime = await window.reviewflow.runtimeStatus();
         runtimeStatus.value = runtime.sidecar;

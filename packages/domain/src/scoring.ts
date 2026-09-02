@@ -46,6 +46,12 @@ export const calculateComposite = (
   if (dimensions.length === 0 || dimensions.length !== assessments.length) {
     throw new Error("Rubric and assessment dimensions must have the same non-zero length");
   }
+  if (new Set(dimensions.map((item) => item.code)).size !== dimensions.length) {
+    throw new Error("Rubric dimension codes must be unique");
+  }
+  if (new Set(assessments.map((item) => item.code)).size !== assessments.length) {
+    throw new Error("Assessment dimension codes must be unique");
+  }
   const assessmentByCode = new Map(assessments.map((item) => [item.code, item]));
   let weightedScore = 0;
   let totalWeight = 0;
@@ -81,4 +87,3 @@ export const createScoreCard = (input: {
   if (input.promptVersion !== undefined) base.promptVersion = input.promptVersion;
   return base;
 };
-

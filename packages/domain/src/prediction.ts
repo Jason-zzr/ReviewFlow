@@ -33,10 +33,16 @@ const calibratedBuckets: BucketProbability[] = [
   { bucket: "breakout", probability: 0.05, label: "高于 10× 基线" },
 ];
 
+const isUsableMetricValue = (value: number | null): value is number =>
+  value !== null && Number.isFinite(value) && value >= 0;
+
+const hasUsableMetrics = (row: NormalizedMetrics): boolean =>
+  metricNames.some((metric) => isUsableMetricValue(row[metric]));
+
 const metricValues = (rows: NormalizedMetrics[], metric: MetricName): number[] =>
   rows.flatMap((row) => {
     const value = row[metric];
-    return value === null || value < 0 ? [] : [value];
+    return isUsableMetricValue(value) ? [value] : [];
   });
 
 export const buildPrediction = (input: {
@@ -52,13 +58,22 @@ export const buildPrediction = (input: {
   model?: string;
   promptVersion?: string;
 }): Prediction => {
+  if (
+    input.scoreComposite !== undefined
+    && (!Number.isFinite(input.scoreComposite) || input.scoreComposite < 0 || input.scoreComposite > 10)
+  ) {
+    throw new RangeError("Content score must be finite and between 0 and 10");
+  }
+  const validHistory = input.history.filter(hasUsableMetrics);
   const matchingBenchmarks = input.benchmarks.filter(
-    (item) => item.platform === input.platform && item.kind === input.kind,
+    (item) => item.platform === input.platform
+      && item.kind === input.kind
+      && hasUsableMetrics(item.metrics),
   );
-  const sourceRows = input.history.length >= 3
-    ? input.history
+  const sourceRows = validHistory.length >= 3
+    ? validHistory
     : matchingBenchmarks.map((item) => item.metrics);
-  const baselineSource = input.history.length >= 3
+  const baselineSource = validHistory.length >= 3
     ? "account_history"
     : matchingBenchmarks.length > 0
       ? "benchmarks"
