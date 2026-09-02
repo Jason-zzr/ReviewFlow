@@ -14,6 +14,7 @@
 - AI scoring accepts only the seven expected dimensions with integer scores and non-empty evidence.
 - Live publishing is disabled by default. It can be enabled only by the user's explicit desktop safety switch or the host-level `REVIEWFLOW_LIVE_PUBLISH=1` override; either path still requires an exact manifest digest and per-task confirmation.
 - Raw platform metric payloads are recursively size-limited and redact credential-like fields before SQLite persistence, logs, diagnostics, or exports can observe them.
+- Diagnostic exports are constructed from an exact runtime-status allowlist; unknown input fields are discarded before serialization, including credentials, Cookies, API keys, content bodies, media paths, and raw platform payloads.
 - Publisher database migrations run in version order inside a write transaction, resume idempotently after partially applied legacy migrations, and refuse databases created by a newer application version.
 
 Do not attach Cookie files, database files, API keys, QR codes, or full diagnostics to public issues. Platform automation may violate platform terms or trigger account restrictions. ReviewFlow does not bypass captchas or risk controls.

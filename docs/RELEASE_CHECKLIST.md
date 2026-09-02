@@ -11,6 +11,8 @@
 - [ ] Confirm the installer contains `reviewflow-sidecar.exe` and `reviewflow-sau.exe`.
 - [ ] Record SHA-256 hashes for the installer and embedded publisher executables.
 
+The Windows CI `verify` job enforces publisher dependency provenance, `npm.cmd run check`, and the high-severity npm audit. Its dependent `windows-release` job runs the same `npm.cmd run package:win` command used locally, exercises `scripts/smoke-installed-release.ps1` in a guarded temporary directory with a minimal system `PATH`, fails if any required embedded executable is missing, and uploads the installer, blockmap, and `release-sha256.txt` for 14 days. A green hosted run is release evidence, but does not replace the manual UI or real-platform checks below.
+
 ## Clean Windows verification
 
 - [ ] Install on a Windows user account without system Python.
@@ -23,11 +25,13 @@
 - [ ] Confirm the diagnostic file excludes credentials, content bodies, media paths, and raw platform payloads.
 - [ ] Open each platform login terminal; leave QR/captcha interaction to the operator.
 - [ ] Confirm `.dpapi` credential files do not contain plaintext Cookie markers and temporary session directories are removed.
-- [ ] Confirm duplicate confirmation clicks reuse one idempotency-bound job.
+- [ ] Confirm duplicate confirmation clicks and concurrent execute requests reuse one atomically claimed idempotency-bound job.
+- [ ] Confirm a video manifest with more than one video file is rejected before execution.
 - [ ] Confirm a stopped uploader becomes `unknown`, not `published`.
 - [ ] Force-end the desktop process, wait for the parent watchdog, and confirm no packaged Sidecar process remains before uninstalling.
 - [ ] Confirm a challenge or expired Cookie stops with `userActionRequired`.
-- [ ] Confirm T+3 work resumes after an application restart and failed automatic collection requests manual input.
+- [ ] Confirm the immutable manifest, all publication job statuses, frozen publication contexts, and T+3 task states recover after an application restart.
+- [ ] Confirm concurrent T+3 collectors claim one task once, an abandoned lease becomes recoverable, and failed automatic collection requests manual input.
 
 ## Release boundary
 
