@@ -1,0 +1,31 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - run: npm ci
+      - run: python -m pip install -e "services/publisher[dev,live]" -c services/publisher/constraints-live.txt
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+      - run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/ensure-biliup.ps1
+      - run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-sidecar.ps1
+      - run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/smoke-sidecar.ps1
+      - run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/smoke-publisher.ps1 -MinimalPath
+      - run: npm run package:dir --workspace @reviewflow/desktop
+      - run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/smoke-sidecar.ps1 -Executable apps/desktop/release/win-unpacked/resources/publisher/reviewflow-sidecar.exe
+      - run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/smoke-publisher.ps1 -Executable apps/desktop/release/win-unpacked/resources/publisher/reviewflow-sau.exe -BiliupExecutable apps/desktop/release/win-unpacked/resources/publisher/biliup.exe -MinimalPath
+      - run: npm audit --audit-level=high

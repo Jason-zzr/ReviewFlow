@@ -1,0 +1,22 @@
+{
+  "name": "reviewflow",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local-first creator content review, prediction, publishing and retrospective workflow.",
+  "license": "MIT",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "npm run dev --workspace @reviewflow/desktop",
+    "build": "npm run build --workspace @reviewflow/domain && npm run build --workspace @reviewflow/desktop",
+    "package:win": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-release.ps1",
+    "test": "npm run test --workspace @reviewflow/domain && npm run test --workspace @reviewflow/desktop && node scripts/run-python-tests.mjs",
+    "typecheck": "npm run typecheck --workspace @reviewflow/domain && npm run typecheck --workspace @reviewflow/desktop",
+    "check": "npm run typecheck && npm test && npm run build"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

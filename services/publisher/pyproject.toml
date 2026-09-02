@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "reviewflow-publisher"
+version = "0.1.0"
+description = "Authenticated local publisher sidecar and CLI for ReviewFlow."
+readme = "README.md"
+requires-python = ">=3.10,<3.13"
+license = { text = "MIT" }
+dependencies = [
+  "fastapi>=0.116,<1",
+  "httpx>=0.28,<1",
+  "pydantic>=2.10,<3",
+  "typer>=0.16,<1",
+  "uvicorn>=0.35,<1",
+]
+
+[project.optional-dependencies]
+live = [
+  "social-auto-upload @ git+https://github.com/rehatRobot/omnipost.git@012caee407f2ee9cca8857579b23721c8b6e7f63",
+]
+dev = [
+  "pytest>=8.4,<9",
+  "pyinstaller>=6.15,<7",
+]
+
+[project.scripts]
+reviewflow = "reviewflow_publisher.cli:app"
+reviewflow-sidecar = "reviewflow_publisher.main:run"
+reviewflow-sau = "reviewflow_publisher.sau_runtime:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

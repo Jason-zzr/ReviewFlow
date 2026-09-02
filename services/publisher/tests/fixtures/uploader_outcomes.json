@@ -1,0 +1,51 @@
+[
+  {
+    "name": "confirmed-success",
+    "returnCode": 0,
+    "stdout": "作品发布成功\n{\"condition\":\"success\"}",
+    "stderr": "",
+    "condition": "success"
+  },
+  {
+    "name": "cookie-expired",
+    "returnCode": 20,
+    "stdout": "",
+    "stderr": "Xiaohongshu cookie is missing or expired: cookies/xiaohongshu_creator.json",
+    "condition": "account_auth_required"
+  },
+  {
+    "name": "challenge-page",
+    "returnCode": 21,
+    "stdout": "检测到验证弹窗，请完成验证",
+    "stderr": "",
+    "condition": "challenge"
+  },
+  {
+    "name": "selector-drift",
+    "returnCode": 22,
+    "stdout": "未找到可点击的发布按钮",
+    "stderr": "Timeout waiting for locator",
+    "condition": "selector_drift"
+  },
+  {
+    "name": "false-success-after-timeout",
+    "returnCode": 0,
+    "stdout": "发布超时：600 次尝试后仍未成功\n{\"condition\":\"success\"}",
+    "stderr": "",
+    "condition": "selector_drift"
+  },
+  {
+    "name": "unclassified-process-error",
+    "returnCode": 23,
+    "stdout": "",
+    "stderr": "browser process exited unexpectedly",
+    "condition": "runtime_error"
+  },
+  {
+    "name": "zero-exit-without-success-evidence",
+    "returnCode": 0,
+    "stdout": "browser closed without a result",
+    "stderr": "",
+    "condition": "runtime_error"
+  }
+]
