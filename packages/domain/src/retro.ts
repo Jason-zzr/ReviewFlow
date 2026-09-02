@@ -17,6 +17,9 @@ export const buildRetroReport = (input: {
   completedAt?: string;
 }): RetroReport => {
   if (!input.prediction.frozenAt) throw new Error("Only frozen predictions can be reviewed");
+  if (input.snapshot.publicationId !== input.publicationId) {
+    throw new Error("Snapshot publication does not match retrospective publication");
+  }
   const completedAt = input.completedAt ?? new Date().toISOString();
   const completedAtTime = new Date(completedAt).getTime();
   const dueAt = retroDueAt(input.publishedAt);

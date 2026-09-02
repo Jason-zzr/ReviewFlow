@@ -1,4 +1,12 @@
-import type { DimensionAssessment, RetroReport, RubricDimensionCode, RubricVersion } from "./types.js";
+import type {
+  ContentKind,
+  DimensionAssessment,
+  Platform,
+  RetroReport,
+  RubricDimensionCode,
+  RubricVersion,
+} from "./types.js";
+import { calculateComposite } from "./scoring.js";
 
 export interface RubricBumpEvaluation {
   eligible: boolean;
@@ -9,6 +17,10 @@ export interface RubricBumpEvaluation {
 }
 
 export interface FormulaCalibrationSample {
+  id: string;
+  platform: Platform;
+  accountId: string;
+  kind: ContentKind;
   assessments: DimensionAssessment[];
   observedPerformance: number;
 }
@@ -24,7 +36,14 @@ const ranks = (values: number[]): number[] => {
     .map((value, index) => ({ value, index }))
     .sort((a, b) => a.value - b.value);
   const result = Array(values.length).fill(0) as number[];
-  ordered.forEach((item, rank) => { result[item.index] = rank + 1; });
+  let start = 0;
+  while (start < ordered.length) {
+    let end = start + 1;
+    while (end < ordered.length && ordered[end]!.value === ordered[start]!.value) end += 1;
+    const averageRank = (start + 1 + end) / 2;
+    for (let index = start; index < end; index += 1) result[ordered[index]!.index] = averageRank;
+    start = end;
+  }
   return result;
 };
 
@@ -32,15 +51,26 @@ const spearman = (left: number[], right: number[]): number => {
   if (left.length !== right.length || left.length < 2) return 0;
   const leftRanks = ranks(left);
   const rightRanks = ranks(right);
-  const squaredDifference = leftRanks.reduce((sum, rank, index) => {
-    const difference = rank - (rightRanks[index] ?? 0);
-    return sum + difference * difference;
-  }, 0);
-  const n = left.length;
-  return 1 - (6 * squaredDifference) / (n * (n * n - 1));
+  const leftMean = leftRanks.reduce((sum, rank) => sum + rank, 0) / leftRanks.length;
+  const rightMean = rightRanks.reduce((sum, rank) => sum + rank, 0) / rightRanks.length;
+  let covariance = 0;
+  let leftVariance = 0;
+  let rightVariance = 0;
+  for (let index = 0; index < leftRanks.length; index += 1) {
+    const leftDifference = leftRanks[index]! - leftMean;
+    const rightDifference = rightRanks[index]! - rightMean;
+    covariance += leftDifference * rightDifference;
+    leftVariance += leftDifference * leftDifference;
+    rightVariance += rightDifference * rightDifference;
+  }
+  if (leftVariance === 0 || rightVariance === 0) return 0;
+  return Math.max(-1, Math.min(1, covariance / Math.sqrt(leftVariance * rightVariance)));
 };
 
-export const canSuggestRubricUpdate = (retros: RetroReport[]): boolean => retros.length >= 10;
+export const canSuggestRubricUpdate = (retros: RetroReport[]): boolean => {
+  const ids = retros.map((retro) => retro.id.trim()).filter(Boolean);
+  return new Set(ids).size >= 10;
+};
 
 export const evaluateRubricBump = (input: {
   retros: RetroReport[];
@@ -55,18 +85,28 @@ export const evaluateRubricBump = (input: {
   if (!canSuggestRubricUpdate(input.retros)) {
     return { eligible: false, sampleSize, rankingConsistency: 0, pairwiseRegressions: 0, reason: "同类复盘未满 10 条" };
   }
+  const hasInvalidValue = [...input.oldScores, ...input.newScores].some((value) => !Number.isFinite(value))
+    || input.observedPerformance.some((value) => !Number.isFinite(value) || value < 0);
+  if (hasInvalidValue) {
+    return {
+      eligible: false,
+      sampleSize,
+      rankingConsistency: 0,
+      pairwiseRegressions: 0,
+      reason: "Backtest requires finite scores and finite non-negative observed performance",
+    };
+  }
   const consistency = spearman(input.oldScores, input.newScores);
-  let oldAligned = 0;
-  let newAligned = 0;
+  let regressions = 0;
   for (let i = 0; i < sampleSize; i += 1) {
     for (let j = i + 1; j < sampleSize; j += 1) {
       const performanceOrder = Math.sign((input.observedPerformance[i] ?? 0) - (input.observedPerformance[j] ?? 0));
       if (performanceOrder === 0) continue;
-      if (Math.sign((input.oldScores[i] ?? 0) - (input.oldScores[j] ?? 0)) === performanceOrder) oldAligned += 1;
-      if (Math.sign((input.newScores[i] ?? 0) - (input.newScores[j] ?? 0)) === performanceOrder) newAligned += 1;
+      const oldOrder = Math.sign((input.oldScores[i] ?? 0) - (input.oldScores[j] ?? 0));
+      const newOrder = Math.sign((input.newScores[i] ?? 0) - (input.newScores[j] ?? 0));
+      if (oldOrder === performanceOrder && newOrder !== performanceOrder) regressions += 1;
     }
   }
-  const regressions = Math.max(0, oldAligned - newAligned);
   const eligible = consistency >= 0.8 && regressions === 0;
   return {
     eligible,
@@ -103,7 +143,31 @@ export const suggestExperimentalRubric = (input: {
   if (input.retros.length < 10 || input.samples.length < 10) {
     throw new Error("同类复盘满 10 条后才能生成公式实验");
   }
-  const performance = input.samples.map((sample) => Math.log1p(Math.max(0, sample.observedPerformance)));
+  if (!canSuggestRubricUpdate(input.retros)) {
+    throw new Error("At least 10 unique retrospective records are required for formula calibration");
+  }
+  const sampleIds = input.samples.map((sample) => sample.id.trim());
+  if (sampleIds.some((id) => !id) || new Set(sampleIds).size !== sampleIds.length) {
+    throw new Error("Unique non-blank sample IDs are required for formula calibration");
+  }
+  const retrospectiveIds = new Set(input.retros.map((retro) => retro.id.trim()));
+  if (retrospectiveIds.size !== sampleIds.length || sampleIds.some((id) => !retrospectiveIds.has(id))) {
+    throw new Error("Calibration samples must correspond one-to-one with retrospective records");
+  }
+  const firstSample = input.samples[0]!;
+  const sameContext = input.samples.every((sample) =>
+    sample.platform === firstSample.platform
+    && sample.accountId === firstSample.accountId
+    && sample.kind === firstSample.kind);
+  if (!firstSample.accountId.trim() || !sameContext) {
+    throw new Error("All calibration samples must share the same account-platform-kind context");
+  }
+  const oldScores = input.samples.map((sample) =>
+    calculateComposite(input.current.dimensions, sample.assessments));
+  if (input.samples.some((sample) => !Number.isFinite(sample.observedPerformance) || sample.observedPerformance < 0)) {
+    throw new RangeError("Finite non-negative observed performance is required");
+  }
+  const performance = input.samples.map((sample) => Math.log1p(sample.observedPerformance));
   const correlations = Object.fromEntries(input.current.dimensions.map((dimension) => {
     const scores = input.samples.map((sample) =>
       sample.assessments.find((assessment) => assessment.code === dimension.code)?.score ?? 0);
@@ -137,7 +201,7 @@ export const suggestExperimentalRubric = (input: {
   };
   const evaluation = evaluateRubricBump({
     retros: input.retros,
-    oldScores: input.samples.map((sample) => scoreWith(input.current, sample)),
+    oldScores,
     newScores: input.samples.map((sample) => scoreWith(candidate, sample)),
     observedPerformance: input.samples.map((sample) => sample.observedPerformance),
   });

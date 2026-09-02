@@ -6,6 +6,7 @@ import type {
   NormalizedMetrics,
   Platform,
   Prediction,
+  PredictionHistorySample,
 } from "./types.js";
 
 const metricNames: MetricName[] = ["views", "likes", "saves", "comments", "shares", "followersGained"];
@@ -51,7 +52,7 @@ export const buildPrediction = (input: {
   platform: Platform;
   accountId: string;
   kind: ContentKind;
-  history: NormalizedMetrics[];
+  history: PredictionHistorySample[];
   benchmarks: BenchmarkSample[];
   scoreComposite?: number;
   generatedAt?: string;
@@ -64,7 +65,22 @@ export const buildPrediction = (input: {
   ) {
     throw new RangeError("Content score must be finite and between 0 and 10");
   }
-  const validHistory = input.history.filter(hasUsableMetrics);
+  const seenHistoryIds = new Set<string>();
+  const validHistory = input.history.filter((sample) => {
+    const snapshotId = sample.snapshotId.trim();
+    if (
+      !snapshotId
+      || seenHistoryIds.has(snapshotId)
+      || sample.platform !== input.platform
+      || sample.accountId !== input.accountId
+      || sample.kind !== input.kind
+      || !hasUsableMetrics(sample.metrics)
+    ) {
+      return false;
+    }
+    seenHistoryIds.add(snapshotId);
+    return true;
+  }).map((sample) => sample.metrics);
   const matchingBenchmarks = input.benchmarks.filter(
     (item) => item.platform === input.platform
       && item.kind === input.kind

@@ -75,15 +75,18 @@ export const createScoreCard = (input: {
   model?: string;
   promptVersion?: string;
 }): ScoreCard => {
+  const dimensions: DimensionAssessment[] = input.assessments.map((assessment) =>
+    Object.freeze({ ...assessment }));
   const base: ScoreCard = {
     id: input.id,
     contentId: input.contentId,
     rubricVersionId: input.rubric.id,
-    dimensions: input.assessments,
+    dimensions,
     composite: calculateComposite(input.rubric.dimensions, input.assessments),
     generatedAt: input.generatedAt ?? new Date().toISOString(),
   };
   if (input.model !== undefined) base.model = input.model;
   if (input.promptVersion !== undefined) base.promptVersion = input.promptVersion;
-  return base;
+  Object.freeze(base.dimensions);
+  return Object.freeze(base);
 };

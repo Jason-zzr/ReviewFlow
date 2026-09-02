@@ -4,6 +4,7 @@ import {
   buildRetroReport,
   calculateComposite,
   calculateMvpValidationProgress,
+  createScoreCard,
   createStarterRubric,
   suggestExperimentalRubric,
   evaluateRubricBump,
@@ -13,6 +14,7 @@ import {
   type DimensionAssessment,
   type NormalizedMetrics,
   type PerformanceSnapshot,
+  type PredictionHistorySample,
   type MvpPublicationRecord,
 } from "./index.js";
 
@@ -21,6 +23,13 @@ const assessments: DimensionAssessment[] = ["ER", "HP", "QL", "NA", "AB", "SR", 
   score: 4,
   evidence: "可定位到稿件中的明确证据",
 }));
+
+const calibrationContext = (index: number) => ({
+  id: `retro-${index}`,
+  platform: "xiaohongshu" as const,
+  accountId: "account-1",
+  kind: "video" as const,
+});
 
 describe("scoring", () => {
   it("uses the equal-weight starter rubric", () => {
@@ -40,16 +49,40 @@ describe("scoring", () => {
     duplicateAssessments[1]!.code = duplicateAssessments[0]!.code;
     expect(() => calculateComposite(dimensions, duplicateAssessments)).toThrow(/unique/i);
   });
+
+  it("creates an immutable score-card snapshot instead of retaining assessment aliases", () => {
+    const source = assessments.map((assessment) => ({ ...assessment }));
+    const card = createScoreCard({
+      id: "score-card-immutable",
+      contentId: "content-1",
+      rubric: createStarterRubric(),
+      assessments: source,
+    });
+
+    source[0]!.score = 0;
+    expect(card.dimensions[0]!.score).toBe(4);
+    expect(Object.isFrozen(card)).toBe(true);
+    expect(Object.isFrozen(card.dimensions)).toBe(true);
+    expect(() => {
+      card.dimensions[0]!.score = 1;
+    }).toThrow(TypeError);
+  });
 });
 
 describe("prediction and retro", () => {
-  const history: NormalizedMetrics[] = Array.from({ length: 10 }, (_, index) => ({
-    views: 800 + index * 40,
-    likes: 60,
-    saves: 12,
-    comments: 8,
-    shares: 5,
-    followersGained: 2,
+  const history: PredictionHistorySample[] = Array.from({ length: 10 }, (_, index) => ({
+    snapshotId: `history-${index}`,
+    platform: "xiaohongshu",
+    accountId: "account-1",
+    kind: "video",
+    metrics: {
+      views: 800 + index * 40,
+      likes: 60,
+      saves: 12,
+      comments: 8,
+      shares: 5,
+      followersGained: 2,
+    },
   }));
 
   it("uses account history and reports medium confidence after ten samples", () => {
@@ -66,6 +99,39 @@ describe("prediction and retro", () => {
     expect(prediction.baselineSource).toBe("account_history");
     expect(prediction.confidence).toBe("medium");
     expect(prediction.ranges.views?.p50).toBeGreaterThan(1_000);
+  });
+
+  it("uses only history from the requested account-platform-kind context", () => {
+    const contextualHistory = [
+      ...[1_000, 1_000, 1_000].map((views, index) => ({
+        snapshotId: `matching-${index}`,
+        platform: "xiaohongshu",
+        accountId: "account-1",
+        kind: "video",
+        metrics: { ...history[0]!.metrics, views },
+      })),
+      ...[100_000, 100_000, 100_000].map((views, index) => ({
+        snapshotId: `other-${index}`,
+        platform: "douyin",
+        accountId: "account-2",
+        kind: "image_text",
+        metrics: { ...history[0]!.metrics, views },
+      })),
+    ];
+
+    const prediction = buildPrediction({
+      id: "prediction-context-filter",
+      contentId: "content-1",
+      platform: "xiaohongshu",
+      accountId: "account-1",
+      kind: "video",
+      history: contextualHistory as never,
+      benchmarks: [],
+    });
+
+    expect(prediction.baselineSource).toBe("account_history");
+    expect(prediction.baselineSampleSize).toBe(3);
+    expect(prediction.ranges.views?.p50).toBe(1_000);
   });
 
   it("falls back to valid benchmarks when account history has no usable metrics", () => {
@@ -87,7 +153,13 @@ describe("prediction and retro", () => {
         emptyMetrics(),
         { ...emptyMetrics(), views: Number.NaN },
         { ...emptyMetrics(), likes: -1 },
-      ],
+      ].map((metrics, index) => ({
+        snapshotId: `invalid-history-${index}`,
+        platform: "xiaohongshu" as const,
+        accountId: "account-1",
+        kind: "video" as const,
+        metrics,
+      })),
       benchmarks: [1_000, 2_000].map((views, index) => ({
         id: `benchmark-${index}`,
         platform: "xiaohongshu" as const,
@@ -140,6 +212,34 @@ describe("prediction and retro", () => {
       snapshot,
       completedAt: "2026-01-04T00:00:00.000Z",
     }).intervalHits.views).toBe(true);
+  });
+
+  it("rejects metrics captured for a different publication", () => {
+    const prediction = freezePrediction(buildPrediction({
+      id: "prediction-publication-link",
+      contentId: "content-1",
+      platform: "xiaohongshu",
+      accountId: "account-1",
+      kind: "video",
+      history,
+      benchmarks: [],
+    }), "2026-01-01T00:00:00.000Z");
+    const snapshot: PerformanceSnapshot = {
+      id: "snapshot-wrong-publication",
+      publicationId: "publication-2",
+      capturedAt: "2026-01-04T00:00:00.000Z",
+      source: "manual",
+      metrics: { views: 1_100, likes: 80, saves: 20, comments: 9, shares: 7, followersGained: 3 },
+    };
+
+    expect(() => buildRetroReport({
+      id: "retro-wrong-publication",
+      publicationId: "publication-1",
+      publishedAt: "2026-01-01T00:00:00.000Z",
+      prediction,
+      snapshot,
+      completedAt: "2026-01-04T00:00:00.000Z",
+    })).toThrow(/snapshot.*publication/i);
   });
 
   it("deep-freezes metric ranges", () => {
@@ -275,10 +375,37 @@ describe("rubric evolution", () => {
     expect(evaluation.sampleSize).toBe(9);
   });
 
+  it("rejects a candidate when any previously correct pairwise ranking regresses", () => {
+    const retros = Array.from({ length: 10 }, (_, index) => ({ id: `retro-${index}` })) as never[];
+    const evaluation = evaluateRubricBump({
+      retros,
+      oldScores: [1, 2, 4, 3, 5, 6, 7, 8, 9, 10],
+      newScores: [2, 1, 3, 4, 5, 6, 7, 8, 9, 10],
+      observedPerformance: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+    });
+
+    expect(evaluation.pairwiseRegressions).toBe(1);
+    expect(evaluation.eligible).toBe(false);
+  });
+
+  it("rejects a backtest containing non-finite scores or performance", () => {
+    const retros = Array.from({ length: 10 }, (_, index) => ({ id: `retro-${index}` })) as never[];
+    const evaluation = evaluateRubricBump({
+      retros,
+      oldScores: [Number.NaN, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+      newScores: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+      observedPerformance: [1, 2, 3, 4, 5, 6, 7, 8, 9, Number.POSITIVE_INFINITY],
+    });
+
+    expect(evaluation.eligible).toBe(false);
+    expect(evaluation.reason).toMatch(/finite/i);
+  });
+
   it("produces only an experimental rubric after ten calibrated retros", () => {
     const current = createStarterRubric("2026-01-01T00:00:00.000Z");
     const retros = Array.from({ length: 10 }, (_, index) => ({ id: `retro-${index}` })) as never[];
     const samples = Array.from({ length: 10 }, (_, index) => ({
+      ...calibrationContext(index),
       assessments: assessments.map((item, dimensionIndex) => ({
         ...item,
         score: Math.min(5, Math.max(0, Math.round(index / 2) + (dimensionIndex === 0 ? 0 : 1))),
@@ -289,6 +416,95 @@ describe("rubric evolution", () => {
     expect(experiment.candidate.status).toBe("experimental");
     expect(experiment.candidate.basedOn).toBe(current.id);
     expect(experiment.candidate.dimensions.reduce((sum, item) => sum + item.weight, 0)).toBeCloseTo(1, 4);
+  });
+
+  it("does not infer correlation from a dimension whose scores are all tied", () => {
+    const current = createStarterRubric("2026-01-01T00:00:00.000Z");
+    const retros = Array.from({ length: 10 }, (_, index) => ({ id: `retro-${index}` })) as never[];
+    const samples = Array.from({ length: 10 }, (_, index) => ({
+      ...calibrationContext(index),
+      assessments: assessments.map((item) => ({ ...item })),
+      observedPerformance: 100 + index * 100,
+    }));
+
+    const experiment = suggestExperimentalRubric({ current, retros, samples });
+    expect(Object.values(experiment.correlations)).toEqual(Array(7).fill(0));
+  });
+
+  it("rejects calibration samples with missing or duplicate rubric dimensions", () => {
+    const current = createStarterRubric("2026-01-01T00:00:00.000Z");
+    const retros = Array.from({ length: 10 }, (_, index) => ({ id: `retro-${index}` })) as never[];
+    const samples = Array.from({ length: 10 }, (_, index) => ({
+      ...calibrationContext(index),
+      assessments: assessments.map((item) => ({ ...item })),
+      observedPerformance: 100 + index * 100,
+    }));
+    samples[0]!.assessments[6]!.code = "ER";
+
+    expect(() => suggestExperimentalRubric({ current, retros, samples })).toThrow(/complete|unique/i);
+  });
+
+  it("rejects duplicate calibration sample IDs", () => {
+    const current = createStarterRubric("2026-01-01T00:00:00.000Z");
+    const retros = Array.from({ length: 10 }, (_, index) => ({ id: `retro-${index}` })) as never[];
+    const samples = Array.from({ length: 10 }, (_, index) => ({
+      ...calibrationContext(index),
+      assessments: assessments.map((item) => ({ ...item })),
+      observedPerformance: 100 + index * 100,
+    }));
+    samples[9]!.id = samples[0]!.id;
+
+    expect(() => suggestExperimentalRubric({ current, retros, samples })).toThrow(/unique.*sample/i);
+  });
+
+  it("rejects calibration samples from mixed account-platform-kind contexts", () => {
+    const current = createStarterRubric("2026-01-01T00:00:00.000Z");
+    const retros = Array.from({ length: 10 }, (_, index) => ({ id: `retro-${index}` })) as never[];
+    const samples = Array.from({ length: 10 }, (_, index) => ({
+      ...calibrationContext(index),
+      accountId: index === 9 ? "account-2" : "account-1",
+      assessments: assessments.map((item) => ({ ...item })),
+      observedPerformance: 100 + index * 100,
+    }));
+
+    expect(() => suggestExperimentalRubric({ current, retros, samples })).toThrow(/same.*context/i);
+  });
+
+  it("rejects repeated retrospective records masquerading as ten samples", () => {
+    const current = createStarterRubric("2026-01-01T00:00:00.000Z");
+    const retros = Array.from({ length: 10 }, () => ({ id: "retro-repeated" })) as never[];
+    const samples = Array.from({ length: 10 }, (_, index) => ({
+      ...calibrationContext(index),
+      assessments: assessments.map((item) => ({ ...item })),
+      observedPerformance: 100 + index * 100,
+    }));
+
+    expect(() => suggestExperimentalRubric({ current, retros, samples })).toThrow(/unique.*retro/i);
+  });
+
+  it("rejects calibration samples that do not correspond to the retrospective pool", () => {
+    const current = createStarterRubric("2026-01-01T00:00:00.000Z");
+    const retros = Array.from({ length: 10 }, (_, index) => ({ id: `retro-${index}` })) as never[];
+    const samples = Array.from({ length: 10 }, (_, index) => ({
+      ...calibrationContext(index),
+      id: index === 9 ? "retro-outside-pool" : `retro-${index}`,
+      assessments: assessments.map((item) => ({ ...item })),
+      observedPerformance: 100 + index * 100,
+    }));
+
+    expect(() => suggestExperimentalRubric({ current, retros, samples })).toThrow(/correspond.*retro/i);
+  });
+
+  it("rejects non-finite observed performance before calibrating weights", () => {
+    const current = createStarterRubric("2026-01-01T00:00:00.000Z");
+    const retros = Array.from({ length: 10 }, (_, index) => ({ id: `retro-${index}` })) as never[];
+    const samples = Array.from({ length: 10 }, (_, index) => ({
+      ...calibrationContext(index),
+      assessments: assessments.map((item) => ({ ...item })),
+      observedPerformance: index === 0 ? Number.NaN : 100 + index * 100,
+    }));
+
+    expect(() => suggestExperimentalRubric({ current, retros, samples })).toThrow(/finite.*performance/i);
   });
 });
 

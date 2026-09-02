@@ -162,6 +162,14 @@ export interface PerformanceSnapshot {
   raw?: Record<string, unknown>;
 }
 
+export interface PredictionHistorySample {
+  snapshotId: string;
+  platform: Platform;
+  accountId: string;
+  kind: ContentKind;
+  metrics: NormalizedMetrics;
+}
+
 export interface RetroReport {
   id: string;
   publicationId: string;
