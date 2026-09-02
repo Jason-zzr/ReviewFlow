@@ -35,6 +35,7 @@ import ScoreLedger from "./components/ScoreLedger.vue";
 import OnboardingDialog from "./components/OnboardingDialog.vue";
 import { recoverOnboardingState } from "./onboarding-state.js";
 import { toBridgePayload } from "./bridge-payload.js";
+import { parseMetricsCsv } from "./metrics-csv.js";
 import {
   refreshPublishJobs,
   upsertPublishJob,
@@ -161,6 +162,21 @@ const navItems: Array<{ id: ViewName; label: string; meta: string }> = [
 const platformLabel = (platform: Platform): string =>
   platform === "xiaohongshu" ? "小红书" : platform === "douyin" ? "抖音" : "B 站";
 
+const metricDefinitions: Array<{ key: MetricName; label: string }> = [
+  { key: "views", label: "播放 / 阅读" },
+  { key: "likes", label: "点赞" },
+  { key: "saves", label: "收藏" },
+  { key: "comments", label: "评论" },
+  { key: "shares", label: "分享" },
+  { key: "followersGained", label: "涨粉" },
+];
+
+const formatRelativeError = (value: number | undefined): string => {
+  if (value === undefined) return "—";
+  const sign = value >= 0 ? "+" : "−";
+  return `${sign}${(Math.abs(value) * 100).toFixed(1)}%`;
+};
+
 const newVariantDraft = (platform: Platform): PlatformVariantDraft => ({
   title: content.value.title,
   body: content.value.body,
@@ -215,6 +231,13 @@ const selectedMetricTask = computed(() =>
   metricTasks.value.find((task) => task.publicationId === retroPublicationId.value) ?? null);
 const selectedPublicationContext = computed(() =>
   publicationContexts.value.find((item) => item.publicationId === retroPublicationId.value) ?? null);
+const retroMetricRows = computed(() => metricDefinitions.map((metric) => ({
+  ...metric,
+  actual: retro.value?.actualMetrics?.[metric.key] ?? null,
+  range: selectedPublicationContext.value?.prediction.ranges[metric.key],
+  hit: retro.value?.intervalHits[metric.key],
+  relativeError: retro.value?.relativeErrors[metric.key],
+})));
 const visibleRubricVersions = computed(() => [...rubricVersions.value].sort((left, right) =>
   right.version - left.version || right.createdAt.localeCompare(left.createdAt)));
 const currentFormulaExperimentRecord = computed(() => {
@@ -645,59 +668,18 @@ const scheduleMetrics = async (): Promise<void> => {
   }
 };
 
-const parseCsvRow = (line: string): string[] => {
-  const values: string[] = [];
-  let current = "";
-  let quoted = false;
-  for (let index = 0; index < line.length; index += 1) {
-    const character = line[index];
-    if (character === '"' && line[index + 1] === '"') {
-      current += '"';
-      index += 1;
-    } else if (character === '"') quoted = !quoted;
-    else if (character === "," && !quoted) {
-      values.push(current.trim());
-      current = "";
-    } else current += character;
-  }
-  values.push(current.trim());
-  return values;
-};
-
 const importMetricsCsv = async (): Promise<void> => {
   try {
     const csv = await window.reviewflow?.pickMetricsCsv();
     if (!csv) return;
-    const lines = csv.replace(/^\uFEFF/, "").split(/\r?\n/).filter(Boolean);
-    if (lines.length < 2) throw new Error("CSV 至少需要表头和一行数据");
-    const headers = parseCsvRow(lines[0] as string);
-    const rows = lines.slice(1).map((line) => parseCsvRow(line));
-    const publicationIdIndex = headers.indexOf("publicationId");
     const expectedPublicationId = retroPublicationId.value.trim();
-    let values: string[];
-    if (rows.length === 1) {
-      values = rows[0] as string[];
-      const rowPublicationId = publicationIdIndex >= 0 ? values[publicationIdIndex]?.trim() : "";
-      if (expectedPublicationId && rowPublicationId && rowPublicationId !== expectedPublicationId) {
-        throw new Error(`CSV publicationId 与当前复盘不一致：${rowPublicationId}`);
-      }
-      if (!expectedPublicationId && rowPublicationId) retroPublicationId.value = rowPublicationId;
-    } else {
-      if (publicationIdIndex < 0) throw new Error("多行 CSV 必须包含 publicationId 列");
-      if (!expectedPublicationId) throw new Error("导入多行 CSV 前请先填写当前 publicationId");
-      const matches = rows.filter((row) => row[publicationIdIndex]?.trim() === expectedPublicationId);
-      if (matches.length === 0) throw new Error(`CSV 中未找到 publicationId=${expectedPublicationId}`);
-      if (matches.length > 1) throw new Error(`CSV 中 publicationId=${expectedPublicationId} 存在重复行`);
-      values = matches[0] as string[];
+    const imported = parseMetricsCsv(csv, expectedPublicationId);
+    if (!expectedPublicationId && imported.publicationId) {
+      retroPublicationId.value = imported.publicationId;
     }
-    const supported: MetricName[] = ["views", "likes", "saves", "comments", "shares", "followersGained"];
-    for (const metric of supported) {
-      const index = headers.indexOf(metric);
-      if (index >= 0 && values[index] !== undefined && values[index] !== "") {
-        const parsed = Number(values[index]);
-        if (!Number.isFinite(parsed) || parsed < 0) throw new Error(`${metric} 必须是非负数字`);
-        metricDraft.value[metric] = Math.round(parsed);
-      }
+    for (const { key } of metricDefinitions) {
+      const value = imported.metrics[key];
+      if (value !== undefined) metricDraft.value[key] = value;
     }
     metricSource.value = "csv";
     statusMessage.value = "CSV 指标已载入，请核对后生成复盘";
@@ -1270,9 +1252,37 @@ watch([content, scoreCard, predictions, selectedPlatforms, accountIds, benchmark
           </div>
           <small class="form-note">CSV 表头：views, likes, saves, comments, shares, followersGained。未满发布后 72 小时会被领域规则拒绝。</small>
           <div v-if="retro" class="retro-result">
-            <span class="result-flag" :class="retro.intervalHits.views ? 'hit' : 'miss'">{{ retro.intervalHits.views ? '命中预测区间' : '超出预测区间' }}</span>
+            <div class="retro-timing">
+              <span>T+3 到期 {{ new Date(retro.dueAt).toLocaleString() }}</span>
+              <span>完成于 {{ new Date(retro.completedAt).toLocaleString() }}</span>
+              <code>snapshot {{ retro.snapshotId }}</code>
+            </div>
             <h2>{{ retro.insights[0] }}</h2>
-            <ul><li v-for="action in retro.nextActions" :key="action">{{ action }}</li></ul>
+            <div class="retro-metric-results" aria-label="预测与真实表现对比">
+              <article v-for="item in retroMetricRows" :key="item.key">
+                <div class="retro-metric-head">
+                  <strong>{{ item.label }}</strong>
+                  <span v-if="item.hit !== undefined" class="result-flag" :class="item.hit ? 'hit' : 'miss'">
+                    {{ item.hit ? '命中区间' : '超出区间' }}
+                  </span>
+                  <span v-else class="result-flag neutral">{{ item.range ? '缺少真实值' : '未生成区间' }}</span>
+                </div>
+                <div class="retro-metric-values">
+                  <span><small>真实</small>{{ item.actual === null ? '—' : item.actual.toLocaleString() }}</span>
+                  <template v-if="item.range">
+                    <span><small>P10</small>{{ item.range.p10.toLocaleString() }}</span>
+                    <span><small>P50</small>{{ item.range.p50.toLocaleString() }}</span>
+                    <span><small>P90</small>{{ item.range.p90.toLocaleString() }}</span>
+                  </template>
+                  <span v-else class="no-range">没有可比较的发布前区间</span>
+                </div>
+                <small class="retro-error">相对误差 {{ formatRelativeError(item.relativeError) }}</small>
+              </article>
+            </div>
+            <div class="retro-actions">
+              <strong>下一步实验</strong>
+              <ul><li v-for="action in retro.nextActions" :key="action">{{ action }}</li></ul>
+            </div>
           </div>
           <div v-else class="empty-state"><strong>等待第一份真实数据</strong><p>完成发布预览并补录 T+3 指标后，这里会显示预测误差与下一步实验。</p></div>
         </section>

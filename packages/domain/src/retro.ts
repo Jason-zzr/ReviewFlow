@@ -58,6 +58,7 @@ export const buildRetroReport = (input: {
     publicationId: input.publicationId,
     predictionId: input.prediction.id,
     snapshotId: input.snapshot.id,
+    actualMetrics: { ...input.snapshot.metrics },
     dueAt,
     completedAt,
     intervalHits,

@@ -103,6 +103,70 @@ describe("prediction and retro", () => {
     expect(prediction.ranges.views?.p50).toBeGreaterThan(1_000);
   });
 
+  it("builds interval bounds from empirical sample quantiles", () => {
+    const skewedHistory = [100, 200, 300, 10_000].map((views, index) => ({
+      snapshotId: `skewed-${index}`,
+      platform: "xiaohongshu" as const,
+      accountId: "account-1",
+      kind: "video" as const,
+      metrics: { ...history[0]!.metrics, views },
+    }));
+
+    const prediction = buildPrediction({
+      id: "prediction-empirical-quantiles",
+      contentId: "content-1",
+      platform: "xiaohongshu",
+      accountId: "account-1",
+      kind: "video",
+      history: skewedHistory,
+      benchmarks: [],
+    });
+
+    expect(prediction.ranges.views).toEqual({ p10: 130, p50: 250, p90: 7_090 });
+  });
+
+  it("derives performance-bucket probabilities from the observed sample distribution", () => {
+    const predictFromViews = (id: string, viewsValues: number[]) => buildPrediction({
+      id,
+      contentId: "content-1",
+      platform: "xiaohongshu",
+      accountId: "account-1",
+      kind: "video",
+      history: viewsValues.map((views, index) => ({
+        snapshotId: `${id}-${index}`,
+        platform: "xiaohongshu" as const,
+        accountId: "account-1",
+        kind: "video" as const,
+        metrics: { ...history[0]!.metrics, views },
+      })),
+      benchmarks: [],
+    });
+
+    const concentrated = predictFromViews("prediction-concentrated", [100, 100, 100, 100, 100]);
+    const spread = predictFromViews("prediction-spread", [10, 50, 100, 400, 2_000]);
+
+    expect(concentrated.bucketProbabilities.map((item) => item.probability)).toEqual([0, 0, 1, 0, 0]);
+    expect(spread.bucketProbabilities.map((item) => item.probability)).toEqual([0.2, 0.2, 0.2, 0.2, 0.2]);
+    expect(spread.bucketProbabilities.reduce((sum, item) => sum + item.probability, 0)).toBeCloseTo(1, 12);
+  });
+
+  it("records the empirical prediction protocol in its metadata and rationale", () => {
+    const prediction = buildPrediction({
+      id: "prediction-empirical-protocol",
+      contentId: "content-1",
+      platform: "xiaohongshu",
+      accountId: "account-1",
+      kind: "video",
+      history: history.slice(0, 3),
+      benchmarks: [],
+    });
+
+    expect(prediction.promptVersion).toBe("prediction-v2");
+    expect(prediction.rationale[0]).toContain("经验分位数");
+    expect(prediction.rationale[0]).toContain("档位分布");
+    expect(prediction.rationale[0]).toContain("views");
+  });
+
   it("preserves the requested content kind in the prediction contract", () => {
     const prediction = buildPrediction({
       id: "prediction-kind",
@@ -228,6 +292,44 @@ describe("prediction and retro", () => {
       snapshot,
       completedAt: "2026-01-04T00:00:00.000Z",
     }).intervalHits.views).toBe(true);
+  });
+
+  it("preserves a detached copy of actual metrics in the retrospective", () => {
+    const prediction = freezePrediction(buildPrediction({
+      id: "prediction-actual-metrics",
+      contentId: "content-1",
+      platform: "xiaohongshu",
+      accountId: "account-1",
+      kind: "video",
+      history,
+      benchmarks: [],
+    }), "2026-01-01T00:00:00.000Z");
+    const snapshot: PerformanceSnapshot = {
+      id: "snapshot-actual-metrics",
+      publicationId: "publication-actual-metrics",
+      capturedAt: "2026-01-04T00:00:00.000Z",
+      source: "manual",
+      metrics: { views: 1_100, likes: 80, saves: 20, comments: 9, shares: 7, followersGained: 3 },
+    };
+
+    const report = buildRetroReport({
+      id: "retro-actual-metrics",
+      publicationId: snapshot.publicationId,
+      publishedAt: "2026-01-01T00:00:00.000Z",
+      prediction,
+      snapshot,
+      completedAt: "2026-01-04T00:00:00.000Z",
+    });
+    snapshot.metrics.views = 999_999;
+
+    expect(report.actualMetrics).toEqual({
+      views: 1_100,
+      likes: 80,
+      saves: 20,
+      comments: 9,
+      shares: 7,
+      followersGained: 3,
+    });
   });
 
   it("rejects metrics captured for a different publication", () => {

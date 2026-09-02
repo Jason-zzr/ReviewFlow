@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 from math import floor, isfinite
-from statistics import median
 from typing import Any
 
 DIMENSION_CODES = ("ER", "HP", "QL", "NA", "AB", "SR", "SAT")
@@ -14,12 +13,12 @@ COLD_BUCKETS = (
     {"bucket": "strong", "probability": 0.08, "label": "10,000–100,000"},
     {"bucket": "breakout", "probability": 0.02, "label": "高于 100,000"},
 )
-CALIBRATED_BUCKETS = (
-    {"bucket": "very_low", "probability": 0.1, "label": "低于 0.3× 基线"},
-    {"bucket": "below_baseline", "probability": 0.24, "label": "0.3–1× 基线"},
-    {"bucket": "baseline", "probability": 0.42, "label": "1–3× 基线"},
-    {"bucket": "strong", "probability": 0.19, "label": "3–10× 基线"},
-    {"bucket": "breakout", "probability": 0.05, "label": "高于 10× 基线"},
+OBSERVED_BUCKET_DEFINITIONS = (
+    {"bucket": "very_low", "label": "低于 0.3× 基线"},
+    {"bucket": "below_baseline", "label": "0.3–1× 基线"},
+    {"bucket": "baseline", "label": "1–3× 基线"},
+    {"bucket": "strong", "label": "3–10× 基线"},
+    {"bucket": "breakout", "label": "高于 10× 基线"},
 )
 
 
@@ -67,6 +66,31 @@ def _uplift(score: float | None) -> float:
 
 def _round_like_javascript(value: float) -> int:
     return floor(value + 0.5)
+
+
+def _quantile(values: list[float], percentile: float) -> float:
+    sorted_values = sorted(values)
+    if not sorted_values:
+        return 0
+    position = (len(sorted_values) - 1) * percentile
+    lower_index = floor(position)
+    upper_index = min(lower_index + 1, len(sorted_values) - 1)
+    lower = sorted_values[lower_index]
+    upper = sorted_values[upper_index]
+    return lower + (upper - lower) * (position - lower_index)
+
+
+def _observed_bucket_probabilities(values: list[float]) -> list[dict[str, Any]]:
+    baseline = _quantile(values, 0.5)
+    counts = [0, 0, 0, 0, 0]
+    for value in values:
+        ratio = 1 if baseline == 0 and value == 0 else float("inf") if baseline == 0 else value / baseline
+        index = 0 if ratio < 0.3 else 1 if ratio < 1 else 2 if ratio < 3 else 3 if ratio < 10 else 4
+        counts[index] += 1
+    return [
+        {**definition, "probability": counts[index] / len(values)}
+        for index, definition in enumerate(OBSERVED_BUCKET_DEFINITIONS)
+    ]
 
 
 def build_prediction(input_value: dict[str, Any]) -> dict[str, Any]:
@@ -134,16 +158,24 @@ def build_prediction(input_value: dict[str, Any]) -> dict[str, Any]:
         values = [row[metric] for row in source_rows if _usable_metric(row.get(metric))]
         if not values:
             continue
-        center = max(0, median(values) * uplift)
         ranges[metric] = {
-            "p10": _round_like_javascript(center * 0.35),
-            "p50": _round_like_javascript(center),
-            "p90": _round_like_javascript(center * 3),
+            "p10": _round_like_javascript(max(0, _quantile(values, 0.1) * uplift)),
+            "p50": _round_like_javascript(max(0, _quantile(values, 0.5) * uplift)),
+            "p90": _round_like_javascript(max(0, _quantile(values, 0.9) * uplift)),
         }
     if not ranges:
         ranges["views"] = {"p10": 100, "p50": 1_000, "p90": 10_000}
 
     sample_size = len(source_rows)
+    representative_metric = max(
+        METRIC_NAMES,
+        key=lambda metric: sum(_usable_metric(row.get(metric)) for row in source_rows),
+    )
+    representative_values = [
+        row[representative_metric]
+        for row in source_rows
+        if _usable_metric(row.get(representative_metric))
+    ]
     model = input_value.get("model")
     prompt_version = input_value.get("promptVersion")
     generated_at = input_value.get("generatedAt")
@@ -154,21 +186,24 @@ def build_prediction(input_value: dict[str, Any]) -> dict[str, Any]:
         "accountId": account_id,
         "kind": kind,
         "ranges": ranges,
-        "bucketProbabilities": [
-            dict(item) for item in (COLD_BUCKETS if baseline_source == "cold_start" else CALIBRATED_BUCKETS)
-        ],
+        "bucketProbabilities": [dict(item) for item in COLD_BUCKETS]
+        if baseline_source == "cold_start"
+        else _observed_bucket_probabilities(representative_values),
         "confidence": _confidence(sample_size),
         "baselineSource": baseline_source,
         "baselineSampleSize": sample_size,
         "rationale": [
             "暂无可用样本，使用公开冷启动先验。"
             if baseline_source == "cold_start"
-            else f"使用 {sample_size} 条同类样本的中位数作为基线。",
+            else (
+                f"使用 {sample_size} 条同类样本的经验分位数构建区间，"
+                f"档位分布按 {representative_metric} 的相对中位数统计。"
+            ),
             "未使用内容评分修正。" if score is None else f"内容评分 {score:.1f}，用于有限幅度修正中枢。",
             "预测是区间判断，不承诺具体播放或互动结果。",
         ],
         "model": "deterministic-baseline" if model is None else model,
-        "promptVersion": "prediction-v1" if prompt_version is None else prompt_version,
+        "promptVersion": "prediction-v2" if prompt_version is None else prompt_version,
         "generatedAt": generated_at or datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
     }
 
@@ -199,15 +234,15 @@ def predict_views(
             "confidence": _confidence(sample_size),
             "views": {"p10": 100, "p50": 1000, "p90": 10000},
         }
-    center = median(values) * _uplift(score)
+    uplift = _uplift(score)
     return {
         "baselineSource": baseline_source,
         "sampleSize": sample_size,
         "confidence": _confidence(sample_size),
         "views": {
-            "p10": _round_like_javascript(center * 0.35),
-            "p50": _round_like_javascript(center),
-            "p90": _round_like_javascript(center * 3),
+            "p10": _round_like_javascript(_quantile(values, 0.1) * uplift),
+            "p50": _round_like_javascript(_quantile(values, 0.5) * uplift),
+            "p90": _round_like_javascript(_quantile(values, 0.9) * uplift),
         },
     }
 
@@ -250,6 +285,10 @@ def build_retro(
     relative_errors: dict[str, float] = {}
     ranges = prediction.get("ranges") or {}
     metrics = snapshot.get("metrics") or {}
+    actual_metrics = {
+        metric: metrics.get(metric) if _usable_metric(metrics.get(metric)) else None
+        for metric in METRIC_NAMES
+    }
     for metric in ("views", "likes", "saves", "comments", "shares", "followersGained"):
         range_value = ranges.get(metric)
         actual = metrics.get(metric)
@@ -263,6 +302,7 @@ def build_retro(
         "predictionId": prediction.get("id"),
         "snapshotId": snapshot.get("id"),
         "publicationId": publication_id or snapshot.get("publicationId"),
+        "actualMetrics": actual_metrics,
         "dueAt": due_at.isoformat().replace("+00:00", "Z"),
         "completedAt": completed.isoformat().replace("+00:00", "Z"),
         "intervalHits": interval_hits,

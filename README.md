@@ -9,9 +9,12 @@ The first release supports Xiaohongshu, Douyin, and Bilibili through a guarded a
 ## What works
 
 - Equal-weight seven-dimension starter rubric with evidence and exact, unique dimension coverage for every score.
+- The desktop score ledger exposes every dimension's evidence and suggestion together with the exact rubric, model, and prompt version used.
 - Independent account × platform × content-type interval predictions that persist their content kind, domain-filter and deduplicate contextual history, ignore unusable metric rows, fall back to benchmarks, and report valid sample-size confidence.
+- Prediction protocol `prediction-v2` derives P10/P50/P90 from empirical sample quantiles and bucket probabilities from the most complete metric's observed distribution; results expose the baseline source, sample size, confidence, generation metadata, and recorded rationale.
 - Deep-frozen predictions and SHA-256 publish manifests whose idempotency keys are digest-bound and atomically claimed before any uploader starts.
-- Resumable SQLite T+3 collection queue with atomic leases, manual/CSV metric snapshots, and Bilibili public metric collection.
+- Resumable SQLite T+3 collection queue with atomic leases, manual/CSV metric snapshots, strict quote-aware CSV validation, and Bilibili public metric collection.
+- Retrospective reports retain a detached canonical metrics snapshot and show six-metric actual-versus-predicted comparisons, interval hits, relative errors, and the T+3 deadline.
 - A local 30-day validation tracker for the eight-publication target and due-only T+3 retrospective completion rate.
 - Ten-sample, same-context rubric experiments with unique one-to-one retrospective linkage, complete-sample validation, visible weight/correlation comparisons, strict pairwise non-regression, explicit activation, and persisted version/audit history.
 - Restart recovery for the immutable publish manifest, all Sidecar publication jobs, T+3 task states, and each publication's frozen prediction/score context through an exact Electron request allowlist.
@@ -42,7 +45,7 @@ Run checks:
 npm.cmd run check
 ```
 
-`npm.cmd run check` covers TypeScript type checking, domain/desktop/publisher tests, production builds, and three real-Electron renderer flows for video, image/text, and platform-challenge handling. The renderer flows use an isolated fixture preload: they do not read user credentials, contact a platform, or claim live publishing success.
+`npm.cmd run check` covers TypeScript type checking, domain/desktop/publisher tests, production builds, and three real-Electron renderer flows for video, image/text, and platform-challenge handling. The video flow imports a quote-aware CSV fixture while the image/text flow verifies manual metric entry. The renderer flows use an isolated fixture preload: they do not read user credentials, contact a platform, or claim live publishing success.
 
 Core CLI examples:
 

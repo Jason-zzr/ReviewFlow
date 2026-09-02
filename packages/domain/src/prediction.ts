@@ -11,11 +11,15 @@ import type {
 
 const metricNames: MetricName[] = ["views", "likes", "saves", "comments", "shares", "followersGained"];
 
-const median = (values: number[]): number => {
+const quantile = (values: number[], percentile: number): number => {
   const sorted = [...values].sort((a, b) => a - b);
-  const middle = Math.floor(sorted.length / 2);
-  if (sorted.length % 2 === 1) return sorted[middle] ?? 0;
-  return ((sorted[middle - 1] ?? 0) + (sorted[middle] ?? 0)) / 2;
+  if (sorted.length === 0) return 0;
+  const position = (sorted.length - 1) * percentile;
+  const lowerIndex = Math.floor(position);
+  const upperIndex = Math.ceil(position);
+  const lower = sorted[lowerIndex] ?? 0;
+  const upper = sorted[upperIndex] ?? lower;
+  return lower + (upper - lower) * (position - lowerIndex);
 };
 
 const coldBuckets: BucketProbability[] = [
@@ -26,12 +30,12 @@ const coldBuckets: BucketProbability[] = [
   { bucket: "breakout", probability: 0.02, label: "高于 100,000" },
 ];
 
-const calibratedBuckets: BucketProbability[] = [
-  { bucket: "very_low", probability: 0.1, label: "低于 0.3× 基线" },
-  { bucket: "below_baseline", probability: 0.24, label: "0.3–1× 基线" },
-  { bucket: "baseline", probability: 0.42, label: "1–3× 基线" },
-  { bucket: "strong", probability: 0.19, label: "3–10× 基线" },
-  { bucket: "breakout", probability: 0.05, label: "高于 10× 基线" },
+const observedBucketDefinitions: Array<Omit<BucketProbability, "probability">> = [
+  { bucket: "very_low", label: "低于 0.3× 基线" },
+  { bucket: "below_baseline", label: "0.3–1× 基线" },
+  { bucket: "baseline", label: "1–3× 基线" },
+  { bucket: "strong", label: "3–10× 基线" },
+  { bucket: "breakout", label: "高于 10× 基线" },
 ];
 
 const isUsableMetricValue = (value: number | null): value is number =>
@@ -45,6 +49,20 @@ const metricValues = (rows: NormalizedMetrics[], metric: MetricName): number[] =
     const value = row[metric];
     return isUsableMetricValue(value) ? [value] : [];
   });
+
+const observedBucketProbabilities = (values: number[]): BucketProbability[] => {
+  const baseline = quantile(values, 0.5);
+  const counts = [0, 0, 0, 0, 0];
+  for (const value of values) {
+    const ratio = baseline === 0 ? (value === 0 ? 1 : Number.POSITIVE_INFINITY) : value / baseline;
+    const index = ratio < 0.3 ? 0 : ratio < 1 ? 1 : ratio < 3 ? 2 : ratio < 10 ? 3 : 4;
+    counts[index] = (counts[index] ?? 0) + 1;
+  }
+  return observedBucketDefinitions.map((definition, index) => ({
+    ...definition,
+    probability: (counts[index] ?? 0) / values.length,
+  }));
+};
 
 export const buildPrediction = (input: {
   id: string;
@@ -95,6 +113,12 @@ export const buildPrediction = (input: {
       ? "benchmarks"
       : "cold_start";
   const sampleSize = sourceRows.length;
+  const representativeMetric = metricNames.reduce((mostComplete, metric) =>
+    metricValues(sourceRows, metric).length > metricValues(sourceRows, mostComplete).length
+      ? metric
+      : mostComplete,
+  "views");
+  const representativeValues = metricValues(sourceRows, representativeMetric);
   const uplift = input.scoreComposite === undefined
     ? 1
     : Math.min(1.45, Math.max(0.65, 0.72 + input.scoreComposite * 0.065));
@@ -103,11 +127,10 @@ export const buildPrediction = (input: {
   for (const metric of metricNames) {
     const values = metricValues(sourceRows, metric);
     if (values.length === 0) continue;
-    const center = Math.max(0, median(values) * uplift);
     ranges[metric] = {
-      p10: Math.round(center * 0.35),
-      p50: Math.round(center),
-      p90: Math.round(center * 3),
+      p10: Math.round(Math.max(0, quantile(values, 0.1) * uplift)),
+      p50: Math.round(Math.max(0, quantile(values, 0.5) * uplift)),
+      p90: Math.round(Math.max(0, quantile(values, 0.9) * uplift)),
     };
   }
 
@@ -123,17 +146,21 @@ export const buildPrediction = (input: {
     accountId: input.accountId,
     kind: input.kind,
     ranges,
-    bucketProbabilities: baselineSource === "cold_start" ? coldBuckets : calibratedBuckets,
+    bucketProbabilities: baselineSource === "cold_start"
+      ? coldBuckets
+      : observedBucketProbabilities(representativeValues),
     confidence,
     baselineSource,
     baselineSampleSize: sampleSize,
     rationale: [
-      baselineSource === "cold_start" ? "暂无可用样本，使用公开冷启动先验。" : `使用 ${sampleSize} 条同类样本的中位数作为基线。`,
+      baselineSource === "cold_start"
+        ? "暂无可用样本，使用公开冷启动先验。"
+        : `使用 ${sampleSize} 条同类样本的经验分位数构建区间，档位分布按 ${representativeMetric} 的相对中位数统计。`,
       input.scoreComposite === undefined ? "未使用内容评分修正。" : `内容评分 ${input.scoreComposite.toFixed(1)}，用于有限幅度修正中枢。`,
       "预测是区间判断，不承诺具体播放或互动结果。",
     ],
     model: input.model ?? "deterministic-baseline",
-    promptVersion: input.promptVersion ?? "prediction-v1",
+    promptVersion: input.promptVersion ?? "prediction-v2",
     generatedAt: input.generatedAt ?? new Date().toISOString(),
   };
 };

@@ -7,6 +7,7 @@ const argumentValue = (name) => {
 };
 
 const mediaPath = argumentValue("reviewflow-e2e-media");
+const metricsCsv = argumentValue("reviewflow-e2e-metrics-csv");
 const scenario = argumentValue("reviewflow-e2e-scenario") || "video";
 const mode = argumentValue("reviewflow-e2e-mode") || "complete";
 let savedWorkspace = null;
@@ -90,7 +91,7 @@ const handleSidecarRequest = (input) => {
 
 contextBridge.exposeInMainWorld("reviewflow", {
   pickMedia: async () => [mediaPath],
-  pickMetricsCsv: async () => null,
+  pickMetricsCsv: async () => metricsCsv || null,
   copyLoginCommand: async () => "",
   openLogin: async () => ({ opened: false }),
   loadWorkspace: async () => ({ onboardingComplete: true }),

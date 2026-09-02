@@ -176,6 +176,7 @@ export interface RetroReport {
   publicationId: string;
   predictionId: string;
   snapshotId: string;
+  actualMetrics: NormalizedMetrics;
   dueAt: string;
   completedAt: string;
   intervalHits: Partial<Record<MetricName, boolean>>;

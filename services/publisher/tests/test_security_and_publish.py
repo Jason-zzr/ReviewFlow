@@ -546,6 +546,84 @@ def test_cli_prediction_falls_back_to_valid_benchmarks():
     assert prediction["views"]["p50"] == 1_500
 
 
+def test_structured_prediction_builds_interval_bounds_from_empirical_quantiles():
+    prediction = build_prediction({
+        "id": "prediction-empirical-quantiles",
+        "contentId": "content-1",
+        "platform": "xiaohongshu",
+        "accountId": "creator-a",
+        "kind": "video",
+        "history": [
+            {
+                "snapshotId": f"skewed-{index}",
+                "platform": "xiaohongshu",
+                "accountId": "creator-a",
+                "kind": "video",
+                "metrics": {"views": views},
+            }
+            for index, views in enumerate((100, 200, 300, 10_000))
+        ],
+        "benchmarks": [],
+    })
+
+    assert prediction["ranges"]["views"] == {"p10": 130, "p50": 250, "p90": 7_090}
+
+
+def test_structured_prediction_derives_bucket_probabilities_from_sample_distribution():
+    def predict(values: tuple[int, ...]) -> dict:
+        return build_prediction({
+            "id": "prediction-observed-buckets",
+            "contentId": "content-1",
+            "platform": "xiaohongshu",
+            "accountId": "creator-a",
+            "kind": "video",
+            "history": [
+                {
+                    "snapshotId": f"observed-{index}",
+                    "platform": "xiaohongshu",
+                    "accountId": "creator-a",
+                    "kind": "video",
+                    "metrics": {"views": views},
+                }
+                for index, views in enumerate(values)
+            ],
+            "benchmarks": [],
+        })
+
+    concentrated = predict((100, 100, 100, 100, 100))
+    spread = predict((10, 50, 100, 400, 2_000))
+
+    assert [item["probability"] for item in concentrated["bucketProbabilities"]] == [0, 0, 1, 0, 0]
+    assert [item["probability"] for item in spread["bucketProbabilities"]] == [0.2] * 5
+    assert sum(item["probability"] for item in spread["bucketProbabilities"]) == pytest.approx(1)
+
+
+def test_structured_prediction_records_empirical_protocol_metadata():
+    prediction = build_prediction({
+        "id": "prediction-empirical-protocol",
+        "contentId": "content-1",
+        "platform": "xiaohongshu",
+        "accountId": "creator-a",
+        "kind": "video",
+        "history": [
+            {
+                "snapshotId": f"protocol-{index}",
+                "platform": "xiaohongshu",
+                "accountId": "creator-a",
+                "kind": "video",
+                "metrics": {"views": views},
+            }
+            for index, views in enumerate((100, 200, 300))
+        ],
+        "benchmarks": [],
+    })
+
+    assert prediction["promptVersion"] == "prediction-v2"
+    assert "经验分位数" in prediction["rationale"][0]
+    assert "档位分布" in prediction["rationale"][0]
+    assert "views" in prediction["rationale"][0]
+
+
 def test_structured_prediction_matches_desktop_context_and_metric_rules():
     prediction = build_prediction({
         "id": "prediction-parity",
@@ -596,8 +674,8 @@ def test_structured_prediction_matches_desktop_context_and_metric_rules():
 
     assert prediction["baselineSource"] == "account_history"
     assert prediction["baselineSampleSize"] == 3
-    assert prediction["ranges"]["views"] == {"p10": 70, "p50": 200, "p90": 600}
-    assert prediction["ranges"]["likes"] == {"p10": 5, "p50": 15, "p90": 45}
+    assert prediction["ranges"]["views"] == {"p10": 120, "p50": 200, "p90": 280}
+    assert prediction["ranges"]["likes"] == {"p10": 11, "p50": 15, "p90": 19}
     assert prediction["accountId"] == "creator-a"
     assert prediction["generatedAt"] == "2026-09-03T00:00:00Z"
 

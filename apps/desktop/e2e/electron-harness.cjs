@@ -14,7 +14,15 @@ const temporaryRoot = argumentValue("reviewflow-e2e-root");
 assert.ok(temporaryRoot, "The outer E2E runner must provide an isolated temporary root");
 const resultRoot = join(desktopRoot, "test-results");
 const scenarios = [
-  { id: "video", kind: "video", label: "视频", mediaPath: join(temporaryRoot, "video.mp4"), mode: "complete" },
+  {
+    id: "video",
+    kind: "video",
+    label: "视频",
+    mediaPath: join(temporaryRoot, "video.mp4"),
+    mode: "complete",
+    metricsCsv: "\uFEFFpublicationId,views,likes,saves,comments,shares,followersGained,note\r\n"
+      + "publication-e2e-video,1200,120,42,18,9,7,\"first line\r\nsecond line, with \"\"evidence\"\"\"",
+  },
   { id: "image_text", kind: "image_text", label: "图文", mediaPath: join(temporaryRoot, "image.png"), mode: "complete" },
   { id: "challenge", kind: "video", label: "视频", mediaPath: join(temporaryRoot, "video.mp4"), mode: "challenge" },
 ];
@@ -83,8 +91,18 @@ const preparePublishDialog = async (window, scenario) => {
   await waitFor(window, "managed media selection", `document.body.textContent.includes("1 个素材已选择")`);
   await clickButton(window, "开始评分");
   await waitFor(window, "score result", `document.querySelector(".save-state")?.textContent.includes("评分完成")`);
+  await waitFor(window, "score evidence and rubric version", `document.querySelector(".score-meta")?.textContent.includes("公式 v1")
+    && document.querySelector(".score-evidence-list")?.textContent.includes("评分依据")
+    && document.querySelector(".score-evidence-list")?.textContent.includes("改进建议")`);
   await clickButton(window, "生成区间预测");
   await waitFor(window, "prediction", `document.querySelector(".prediction-tape")?.textContent.includes("播放中枢")`);
+  await waitFor(window, "prediction evidence and interval", `document.querySelector(".prediction-meta")?.textContent.includes("冷启动先验")
+    && document.querySelector(".prediction-meta")?.textContent.includes("0 条样本")
+    && document.querySelector(".prediction-meta")?.textContent.includes("deterministic-baseline")
+    && document.querySelector(".prediction-meta")?.textContent.includes("prediction-v2")
+    && document.querySelector(".prediction-range-grid")?.textContent.includes("P10")
+    && document.querySelector(".prediction-range-grid")?.textContent.includes("P90")
+    && document.querySelectorAll(".prediction-rationale li").length === 3`);
   await clickButton(window, "进入发布预览");
   await waitFor(window, "publish dialog", `document.querySelector('[role="dialog"]')?.textContent.includes("确认这一个发布清单")`);
   await window.webContents.executeJavaScript(`(() => {
@@ -117,12 +135,32 @@ const runContentFlow = async (window, scenario) => {
   await setLabeledControl(window, "内容链接 / BV 号", `https://example.test/${scenario.kind}`);
   await clickButton(window, "确认已发布并加入 T+3");
   await waitFor(window, "confirmed publication", `document.querySelector(".save-state")?.textContent.includes("已确认小红书发布")`);
-  for (const [metric, value] of Object.entries({ views: 1200, likes: 120, saves: 42, comments: 18, shares: 9, followersGained: 7 })) {
-    await setLabeledControl(window, metric, value);
+  const expectedMetrics = { views: 1200, likes: 120, saves: 42, comments: 18, shares: 9, followersGained: 7 };
+  if (scenario.metricsCsv) {
+    await clickButton(window, "导入 CSV");
+    await waitFor(window, "CSV metrics import", `(() => {
+      const expected = ${JSON.stringify(expectedMetrics)};
+      const labels = [...document.querySelectorAll(".metrics-grid label")];
+      return document.querySelector(".save-state")?.textContent.includes("CSV 指标已载入")
+        && Object.entries(expected).every(([metric, value]) => {
+          const label = labels.find((candidate) => candidate.childNodes[0]?.textContent?.trim() === metric);
+          return label?.querySelector("input")?.value === String(value);
+        });
+    })()`);
+  } else {
+    for (const [metric, value] of Object.entries(expectedMetrics)) {
+      await setLabeledControl(window, metric, value);
+    }
   }
   await clickButton(window, "保存指标并生成复盘");
   await waitFor(window, "T+3 retrospective", `document.querySelector(".retro-result")
     && document.querySelector(".save-state")?.textContent.includes("T+3 复盘已生成")`);
+  await waitFor(window, "complete retrospective comparison", `document.querySelectorAll(".retro-metric-results article").length === 6
+    && document.querySelector(".retro-metric-results")?.textContent.includes("真实1,200")
+    && document.querySelector(".retro-metric-results")?.textContent.includes("P10")
+    && document.querySelector(".retro-metric-results")?.textContent.includes("P90")
+    && document.querySelector(".retro-metric-results")?.textContent.includes("相对误差 +20.0%")
+    && document.querySelector(".retro-timing")?.textContent.includes("T+3 到期")`);
   await waitFor(window, "persisted completed flow", `Boolean(window.__reviewflowE2E.snapshot().savedWorkspace?.retro)`);
 
   const state = await window.webContents.executeJavaScript("window.__reviewflowE2E.snapshot()", true);
@@ -130,6 +168,7 @@ const runContentFlow = async (window, scenario) => {
   assert.equal(state.savedWorkspace.publishJobs.length, 1);
   assert.equal(state.savedWorkspace.publicationContexts[0].kind, scenario.kind);
   assert.equal(state.savedWorkspace.retro.publicationId, `publication-e2e-${scenario.id}`);
+  assert.equal(state.savedWorkspace.metricSource, scenario.metricsCsv ? "csv" : "manual");
   const executeCalls = state.sidecarCalls.filter((call) => call.path === "/v1/publish/execute");
   assert.equal(state.sidecarCalls.filter((call) => call.path === "/v1/publish/preview").length, 2);
   assert.equal(executeCalls.length, 2);
@@ -184,6 +223,9 @@ app.whenReady().then(async () => {
             `--reviewflow-e2e-media=${encodeURIComponent(scenario.mediaPath)}`,
             `--reviewflow-e2e-scenario=${scenario.id}`,
             `--reviewflow-e2e-mode=${scenario.mode}`,
+            ...(scenario.metricsCsv
+              ? [`--reviewflow-e2e-metrics-csv=${encodeURIComponent(scenario.metricsCsv)}`]
+              : []),
           ],
         },
       });
