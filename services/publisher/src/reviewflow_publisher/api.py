@@ -9,6 +9,7 @@ from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 
 from .adapters import AdapterRegistry
+from .adapters.base import ExecutionCondition
 from .models import (
     AccountCheckRequest,
     AccountCheckResult,
@@ -91,7 +92,7 @@ def create_app(store: Store | None = None) -> FastAPI:
             platform=request.platform,
             accountId=request.accountId,
             runtimeAvailable=True,
-            authenticated=result.return_code == 0,
+            authenticated=result.return_code == 0 and result.condition is ExecutionCondition.success,
             message=result.stdout or result.stderr or "Account check completed",
         )
 

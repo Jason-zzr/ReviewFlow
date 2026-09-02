@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timezone
+import os
 from pathlib import Path
 
 from .base import ExecutionCondition, ExecutionResult, PublisherAdapter
@@ -18,6 +19,18 @@ from ..models import (
 from ..security import redact
 
 
+CHALLENGE_MARKERS = (
+    "captcha",
+    "challenge",
+    "检测到验证弹窗",
+    "请输入验证码",
+    "安全验证",
+    "请完成验证",
+    "风控",
+    "risk control",
+)
+
+
 class SauAdapter(PublisherAdapter):
     def __init__(self, platform: Platform):
         self.platform = platform
@@ -31,6 +44,10 @@ class SauAdapter(PublisherAdapter):
             supportsAutomaticMetrics=self.platform is Platform.bilibili,
             liveRuntimeAvailable=self.runtime_available(),
         )
+
+    @staticmethod
+    def _runtime_environment() -> dict[str, str]:
+        return {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
 
     def validate(self, variant: PlatformVariant) -> list[str]:
         warnings: list[str] = []
@@ -97,9 +114,78 @@ class SauAdapter(PublisherAdapter):
             *command,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            env=self._runtime_environment(),
         )
-        stdout, stderr = await process.communicate()
+        stdout, stderr = await self._communicate_for_publish(process)
         return self.execution_result(process.returncode or 0, stdout, stderr, limit=4_000)
+
+    @classmethod
+    async def _communicate_for_publish(
+        cls,
+        process: asyncio.subprocess.Process,
+    ) -> tuple[bytes, bytes]:
+        if process.stdout is None or process.stderr is None:
+            raise RuntimeError("Publisher process pipes are unavailable")
+        challenge = asyncio.Event()
+        stdout_parts: list[bytes] = []
+        stderr_parts: list[bytes] = []
+
+        async def drain(stream: asyncio.StreamReader, parts: list[bytes]) -> None:
+            observed = ""
+            while chunk := await stream.read(1_024):
+                parts.append(chunk)
+                observed = (observed + chunk.decode("utf-8", errors="replace"))[-8_000:]
+                if cls._has_challenge_marker(observed):
+                    challenge.set()
+
+        readers = [
+            asyncio.create_task(drain(process.stdout, stdout_parts)),
+            asyncio.create_task(drain(process.stderr, stderr_parts)),
+        ]
+        process_wait = asyncio.create_task(process.wait())
+        challenge_wait = asyncio.create_task(challenge.wait())
+        try:
+            done, _ = await asyncio.wait(
+                {process_wait, challenge_wait},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if challenge_wait in done and challenge.is_set() and process.returncode is None:
+                await cls._stop_process_tree(process)
+            else:
+                await process_wait
+            await asyncio.gather(*readers)
+        finally:
+            challenge_wait.cancel()
+            await asyncio.gather(challenge_wait, return_exceptions=True)
+        return b"".join(stdout_parts), b"".join(stderr_parts)
+
+    @staticmethod
+    async def _stop_process_tree(process: asyncio.subprocess.Process) -> None:
+        if process.returncode is not None:
+            return
+        if os.name == "nt":
+            killer = await asyncio.create_subprocess_exec(
+                "taskkill.exe",
+                "/PID",
+                str(process.pid),
+                "/T",
+                "/F",
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            await killer.communicate()
+        else:
+            process.terminate()
+        try:
+            await asyncio.wait_for(process.wait(), timeout=5)
+        except TimeoutError:
+            process.kill()
+            await process.wait()
+
+    @staticmethod
+    def _has_challenge_marker(output: str) -> bool:
+        lowered = output.lower()
+        return any(marker in lowered for marker in CHALLENGE_MARKERS)
 
     def account_command(self, action: str, account: str, *, headed: bool = False) -> list[str]:
         if action not in {"login", "check"}:
@@ -127,6 +213,7 @@ class SauAdapter(PublisherAdapter):
             *command,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            env=self._runtime_environment(),
         )
         stdout, stderr = await process.communicate()
         return self.execution_result(process.returncode or 0, stdout, stderr, limit=2_000)
@@ -174,14 +261,6 @@ class SauAdapter(PublisherAdapter):
             "cookie 失效",
             "请先完成登录",
         )
-        challenge_markers = (
-            "captcha",
-            "challenge",
-            "检测到验证弹窗",
-            "请输入验证码",
-            "安全验证",
-            "请完成验证",
-        )
         selector_markers = (
             "selector",
             "strict mode violation",
@@ -192,7 +271,7 @@ class SauAdapter(PublisherAdapter):
         )
         if any(marker in combined for marker in auth_markers):
             condition = ExecutionCondition.account_auth_required
-        elif any(marker in combined for marker in challenge_markers) and "验证已完成" not in combined:
+        elif SauAdapter._has_challenge_marker(combined):
             condition = ExecutionCondition.challenge
         elif any(marker in combined for marker in selector_markers):
             condition = ExecutionCondition.selector_drift

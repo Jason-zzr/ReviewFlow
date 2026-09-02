@@ -27,7 +27,7 @@ from reviewflow_publisher.models import (
 )
 from reviewflow_publisher.metrics import fetch_metrics
 from reviewflow_publisher.models import MetricFetchRequest
-from reviewflow_publisher.growth import build_retro, predict_views, score_assessments
+from reviewflow_publisher.growth import build_prediction, build_retro, predict_views, score_assessments
 from reviewflow_publisher.service import PublishService
 from reviewflow_publisher.storage import StaleMetricClaim, Store
 from reviewflow_publisher.scheduler import MetricScheduler
@@ -546,6 +546,62 @@ def test_cli_prediction_falls_back_to_valid_benchmarks():
     assert prediction["views"]["p50"] == 1_500
 
 
+def test_structured_prediction_matches_desktop_context_and_metric_rules():
+    prediction = build_prediction({
+        "id": "prediction-parity",
+        "contentId": "content-parity",
+        "platform": "xiaohongshu",
+        "accountId": "creator-a",
+        "kind": "video",
+        "history": [
+            {
+                "snapshotId": "snapshot-1",
+                "platform": "xiaohongshu",
+                "accountId": "creator-a",
+                "kind": "video",
+                "metrics": {"views": 100, "likes": 10},
+            },
+            {
+                "snapshotId": "snapshot-1",
+                "platform": "xiaohongshu",
+                "accountId": "creator-a",
+                "kind": "video",
+                "metrics": {"views": 100_000, "likes": 10_000},
+            },
+            {
+                "snapshotId": "snapshot-2",
+                "platform": "xiaohongshu",
+                "accountId": "creator-a",
+                "kind": "video",
+                "metrics": {"views": 200, "likes": 20},
+            },
+            {
+                "snapshotId": "snapshot-3",
+                "platform": "xiaohongshu",
+                "accountId": "creator-a",
+                "kind": "video",
+                "metrics": {"views": 300},
+            },
+            {
+                "snapshotId": "snapshot-wrong-account",
+                "platform": "xiaohongshu",
+                "accountId": "creator-b",
+                "kind": "video",
+                "metrics": {"views": 999_999, "likes": 999_999},
+            },
+        ],
+        "benchmarks": [],
+        "generatedAt": "2026-09-03T00:00:00Z",
+    })
+
+    assert prediction["baselineSource"] == "account_history"
+    assert prediction["baselineSampleSize"] == 3
+    assert prediction["ranges"]["views"] == {"p10": 70, "p50": 200, "p90": 600}
+    assert prediction["ranges"]["likes"] == {"p10": 5, "p50": 15, "p90": 45}
+    assert prediction["accountId"] == "creator-a"
+    assert prediction["generatedAt"] == "2026-09-03T00:00:00Z"
+
+
 def test_content_predict_cli_accepts_history_and_benchmark_payload(tmp_path: Path):
     input_file = tmp_path / "prediction-input.json"
     input_file.write_text(json.dumps({
@@ -559,6 +615,43 @@ def test_content_predict_cli_accepts_history_and_benchmark_payload(tmp_path: Pat
     payload = json.loads(result.output)
     assert payload["baselineSource"] == "benchmarks"
     assert payload["sampleSize"] == 2
+
+
+def test_content_predict_cli_uses_full_prediction_contract_for_structured_input(tmp_path: Path):
+    input_file = tmp_path / "structured-prediction-input.json"
+    input_file.write_text(json.dumps({
+        "id": "prediction-cli",
+        "contentId": "content-cli",
+        "platform": "bilibili",
+        "accountId": "creator-bili",
+        "kind": "video",
+        "history": [],
+        "benchmarks": [
+            {
+                "id": "benchmark-1",
+                "platform": "bilibili",
+                "kind": "video",
+                "metrics": {"views": 1_000, "likes": 50},
+            },
+            {
+                "id": "benchmark-wrong-kind",
+                "platform": "bilibili",
+                "kind": "image_text",
+                "metrics": {"views": 999_999, "likes": 999_999},
+            },
+        ],
+        "generatedAt": "2026-09-03T01:00:00Z",
+    }), encoding="utf-8")
+
+    result = CliRunner().invoke(app, ["content", "predict", str(input_file), "--score", "8"])
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["baselineSource"] == "benchmarks"
+    assert payload["baselineSampleSize"] == 1
+    assert payload["ranges"]["views"]["p50"] == 1_240
+    assert payload["ranges"]["likes"]["p50"] == 62
+    assert payload["contentId"] == "content-cli"
 
 
 def test_cli_prediction_rejects_a_non_finite_content_score():

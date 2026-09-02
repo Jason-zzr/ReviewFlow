@@ -11,7 +11,7 @@ import typer
 from .adapters import AdapterRegistry
 from .digests import manifest_digest
 from .models import Platform, PublishExecuteRequest, PublishManifest
-from .growth import build_retro, predict_views, score_assessments
+from .growth import build_prediction, build_retro, predict_views, score_assessments
 from .security import redact
 from .service import PublishService
 from .storage import Store
@@ -49,6 +49,17 @@ def content_predict(history_file: Path, score: float | None = None) -> None:
         history = payload
         benchmarks: list[dict] = []
     elif isinstance(payload, dict):
+        structured_fields = {"id", "contentId", "platform", "accountId", "kind"}
+        if structured_fields.intersection(payload):
+            structured_input = dict(payload)
+            if score is not None:
+                structured_input["scoreComposite"] = score
+            typer.echo(json.dumps(
+                build_prediction(structured_input),
+                ensure_ascii=False,
+                indent=2,
+            ))
+            return
         history = payload.get("history", [])
         benchmarks = payload.get("benchmarks", [])
     else:
@@ -157,11 +168,17 @@ def retro_run(
     prediction: Path = typer.Option(..., exists=True, dir_okay=False),
     snapshot: Path = typer.Option(..., exists=True, dir_okay=False),
     published_at: str = typer.Option(..., help="UTC ISO-8601 publication timestamp"),
+    publication_id: str = typer.Option(..., help="Confirmed publication ID expected in the snapshot"),
 ) -> None:
     prediction_payload = json.loads(prediction.read_text(encoding="utf-8"))
     snapshot_payload = json.loads(snapshot.read_text(encoding="utf-8"))
     typer.echo(json.dumps(
-        build_retro(prediction_payload, snapshot_payload, published_at),
+        build_retro(
+            prediction_payload,
+            snapshot_payload,
+            published_at,
+            publication_id=publication_id,
+        ),
         ensure_ascii=False,
         indent=2,
     ))

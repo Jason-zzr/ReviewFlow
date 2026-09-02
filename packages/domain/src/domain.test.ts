@@ -4,6 +4,8 @@ import {
   buildRetroReport,
   calculateComposite,
   calculateMvpValidationProgress,
+  activateRubricExperimentRecord,
+  createRubricExperimentRecord,
   createScoreCard,
   createStarterRubric,
   suggestExperimentalRubric,
@@ -445,6 +447,83 @@ describe("rubric evolution", () => {
     expect(experiment.candidate.status).toBe("experimental");
     expect(experiment.candidate.basedOn).toBe(current.id);
     expect(experiment.candidate.dimensions.reduce((sum, item) => sum + item.weight, 0)).toBeCloseTo(1, 4);
+  });
+
+  it("records an immutable pending formula experiment with its exact calibration context", () => {
+    const current = createStarterRubric("2026-01-01T00:00:00.000Z");
+    const retros = Array.from({ length: 10 }, (_, index) => ({ id: `retro-${index}` })) as never[];
+    const samples = Array.from({ length: 10 }, (_, index) => ({
+      ...calibrationContext(index),
+      assessments: assessments.map((item, dimensionIndex) => ({
+        ...item,
+        score: Math.min(5, Math.max(0, Math.round(index / 2) + (dimensionIndex === 0 ? 0 : 1))),
+      })),
+      observedPerformance: 100 + index * 100,
+    }));
+    const experiment = suggestExperimentalRubric({
+      current,
+      retros,
+      samples,
+      createdAt: "2026-02-01T00:00:00.000Z",
+    });
+
+    const record = createRubricExperimentRecord({
+      id: "experiment-record-1",
+      experiment,
+      context: { platform: "xiaohongshu", accountId: "account-1", kind: "video" },
+      sampleIds: samples.map((sample) => sample.id),
+    });
+    experiment.candidate.dimensions[0]!.weight = 0;
+
+    expect(record.status).toBe("pending");
+    expect(record.context).toEqual({ platform: "xiaohongshu", accountId: "account-1", kind: "video" });
+    expect(record.sampleIds).toHaveLength(10);
+    expect(record.experiment.candidate.dimensions[0]!.weight).not.toBe(0);
+    expect(Object.isFrozen(record)).toBe(true);
+  });
+
+  it("accepts a passing experiment into an auditable version history without mutating its pending record", () => {
+    const current = createStarterRubric("2026-01-01T00:00:00.000Z");
+    const retros = Array.from({ length: 10 }, (_, index) => ({ id: `retro-${index}` })) as never[];
+    const samples = Array.from({ length: 10 }, (_, index) => ({
+      ...calibrationContext(index),
+      assessments: assessments.map((item) => ({
+        ...item,
+        score: Math.min(5, Math.max(0, Math.round(index / 2))),
+      })),
+      observedPerformance: 100 + index * 100,
+    }));
+    const experiment = suggestExperimentalRubric({
+      current,
+      retros,
+      samples,
+      createdAt: "2026-02-01T00:00:00.000Z",
+    });
+    const pending = createRubricExperimentRecord({
+      id: "experiment-record-accepted",
+      experiment,
+      context: { platform: "xiaohongshu", accountId: "account-1", kind: "video" },
+      sampleIds: samples.map((sample) => sample.id),
+    });
+
+    const accepted = activateRubricExperimentRecord({
+      current,
+      record: pending,
+      versions: [current, experiment.candidate],
+      acceptedAt: "2026-02-02T00:00:00.000Z",
+    });
+
+    expect(accepted.activeRubric.status).toBe("active");
+    expect(accepted.activeRubric.version).toBe(2);
+    expect(accepted.versions).toHaveLength(2);
+    expect(accepted.versions.find((version) => version.id === current.id)?.status).toBe("retired");
+    expect(accepted.versions.find((version) => version.id === accepted.activeRubric.id)?.status).toBe("active");
+    expect(accepted.record).toMatchObject({
+      status: "accepted",
+      acceptedAt: "2026-02-02T00:00:00.000Z",
+      activatedRubricId: accepted.activeRubric.id,
+    });
+    expect(pending.status).toBe("pending");
   });
 
   it("does not infer correlation from a dimension whose scores are all tied", () => {

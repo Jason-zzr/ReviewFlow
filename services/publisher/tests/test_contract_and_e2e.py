@@ -1,19 +1,25 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import contextmanager
 import json
 import sqlite3
 import subprocess
 import sys
+import time
+import types
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
+from fastapi.testclient import TestClient
 from pydantic import ValidationError
 from typer.testing import CliRunner
 
 from reviewflow_publisher.adapters.base import ExecutionCondition, ExecutionResult
 from reviewflow_publisher.adapters.sau import SauAdapter
+from reviewflow_publisher import sau_runtime
+from reviewflow_publisher.api import create_app
 from reviewflow_publisher.digests import manifest_digest
 from reviewflow_publisher.growth import build_retro, predict_views, score_assessments
 from reviewflow_publisher.cli import app, publish_summary
@@ -31,6 +37,8 @@ from reviewflow_publisher.models import (
 from reviewflow_publisher.service import PublishService
 from reviewflow_publisher.security import redact
 from reviewflow_publisher.sau_runtime import (
+    _douyin,
+    _xiaohongshu,
     _install_upstream_config,
     account_session,
     build_parser,
@@ -52,6 +60,218 @@ def test_uploader_outcome_contract(fixture: dict) -> None:
         fixture["stderr"],
     )
     assert result.condition.value == fixture["condition"], fixture["name"]
+
+
+def test_challenge_marker_always_stops_even_when_output_also_claims_success() -> None:
+    result = SauAdapter.execution_result(
+        0,
+        '{"condition":"success"}',
+        "检测到验证弹窗，验证已完成",
+    )
+
+    assert result.condition is ExecutionCondition.challenge
+
+
+@pytest.mark.parametrize("marker", ["平台检测到账号风控", "risk control detected"])
+def test_risk_control_marker_requires_user_action(marker: str) -> None:
+    result = SauAdapter.execution_result(
+        0,
+        '{"condition":"success"}',
+        marker,
+    )
+
+    assert result.condition is ExecutionCondition.challenge
+
+
+def test_xiaohongshu_runtime_does_not_synthesize_success_without_publish_evidence(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    class FakeUploader:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def main(self) -> None:
+            return None
+
+    fake_module = types.ModuleType("uploader.xiaohongshu_uploader.main")
+    fake_module.XIAOHONGSHU_PUBLISH_STRATEGY_IMMEDIATE = 0
+    fake_module.XIAOHONGSHU_PUBLISH_STRATEGY_SCHEDULED = 1
+    fake_module.XiaoHongShuNote = FakeUploader
+    fake_module.XiaoHongShuVideo = FakeUploader
+    fake_module.cookie_auth = None
+    fake_module.xiaohongshu_setup = None
+    monkeypatch.setitem(sys.modules, "uploader.xiaohongshu_uploader.main", fake_module)
+    args = build_parser().parse_args([
+        "xiaohongshu",
+        "upload-note",
+        "--account",
+        "creator",
+        "--images",
+        str(tmp_path / "image.png"),
+        "--title",
+        "fixture",
+    ])
+
+    exit_code = asyncio.run(_xiaohongshu(args, tmp_path / "account.json"))
+
+    assert exit_code == 0
+    assert '"condition": "success"' not in capsys.readouterr().out
+
+
+def test_douyin_runtime_does_not_synthesize_success_without_publish_evidence(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    class FakeUploader:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def douyin_upload_video(self) -> None:
+            return None
+
+        async def douyin_upload_note(self) -> None:
+            return None
+
+    fake_module = types.ModuleType("uploader.douyin_uploader.main")
+    fake_module.DOUYIN_PUBLISH_STRATEGY_IMMEDIATE = 0
+    fake_module.DOUYIN_PUBLISH_STRATEGY_SCHEDULED = 1
+    fake_module.DouYinNote = FakeUploader
+    fake_module.DouYinVideo = FakeUploader
+    fake_module.cookie_auth = None
+    fake_module.douyin_setup = None
+    monkeypatch.setitem(sys.modules, "uploader.douyin_uploader.main", fake_module)
+    args = build_parser().parse_args([
+        "douyin",
+        "upload-note",
+        "--account",
+        "creator",
+        "--images",
+        str(tmp_path / "image.png"),
+        "--title",
+        "fixture",
+    ])
+
+    exit_code = asyncio.run(_douyin(args, tmp_path / "account.json"))
+
+    assert exit_code == 0
+    assert '"condition": "success"' not in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("marker", ["challenge", "风控"])
+def test_publish_stops_the_runtime_as_soon_as_a_challenge_is_reported(
+    tmp_path: Path,
+    monkeypatch,
+    marker: str,
+) -> None:
+    media = tmp_path / "challenge-stop.mp4"
+    media.write_bytes(b"challenge stop fixture")
+    script = tmp_path / "challenge_runtime.py"
+    script.write_text(
+        f"import time\nprint({marker!r}, flush=True)\ntime.sleep(4)\n",
+        encoding="utf-8",
+    )
+    adapter = SauAdapter(Platform.douyin)
+    monkeypatch.setattr(adapter, "runtime_executable", lambda: sys.executable)
+    monkeypatch.setattr(adapter, "preview", lambda _variant: ["sau", str(script)])
+
+    started = time.monotonic()
+    result = asyncio.run(adapter.publish(make_manifest(media, Platform.douyin).variants[0]))
+    elapsed = time.monotonic() - started
+
+    assert result.condition is ExecutionCondition.challenge
+    assert elapsed < 2
+
+
+def test_runtime_maps_risk_control_exceptions_to_a_challenge(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    browser = tmp_path / "chrome.exe"
+    browser.write_bytes(b"browser fixture")
+
+    @contextmanager
+    def fake_account_session(_platform: str, _account: str):
+        yield tmp_path / "account.json"
+
+    async def risk_control(_args, _account_file):
+        raise RuntimeError("risk control detected")
+
+    monkeypatch.setattr(sau_runtime, "cleanup_stale_sessions", lambda: 0)
+    monkeypatch.setattr(sau_runtime, "resolve_chromium_executable", lambda: browser)
+    monkeypatch.setattr(sau_runtime, "_patch_browser_launch", lambda _browser: None)
+    monkeypatch.setattr(sau_runtime, "account_session", fake_account_session)
+    monkeypatch.setattr(sau_runtime, "_xiaohongshu", risk_control)
+
+    exit_code = sau_runtime.run([
+        "xiaohongshu",
+        "upload-note",
+        "--account",
+        "creator",
+        "--images",
+        str(tmp_path / "image.png"),
+        "--title",
+        "fixture",
+    ])
+
+    assert exit_code == 21
+    assert '"condition": "challenge"' in capsys.readouterr().err
+
+
+def test_account_check_requires_a_success_condition_before_authenticating(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    class ChallengeAccountAdapter:
+        @staticmethod
+        def runtime_available() -> bool:
+            return True
+
+        @staticmethod
+        async def check(_account: str) -> ExecutionResult:
+            return ExecutionResult(
+                0,
+                '{"condition":"challenge"}',
+                "",
+                ExecutionCondition.challenge,
+            )
+
+    class ChallengeRegistry:
+        @staticmethod
+        def get(_platform: Platform) -> ChallengeAccountAdapter:
+            return ChallengeAccountAdapter()
+
+    token = "account-check-session-token"
+    monkeypatch.setenv("REVIEWFLOW_SESSION_TOKEN", token)
+    monkeypatch.setattr("reviewflow_publisher.api.AdapterRegistry", ChallengeRegistry)
+    with TestClient(create_app(Store(tmp_path / "account-check.sqlite3"))) as client:
+        response = client.post(
+            "/v1/accounts/check",
+            json={"platform": "xiaohongshu", "accountId": "creator"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["authenticated"] is False
+
+
+def test_account_action_uses_utf8_for_risk_control_output(tmp_path: Path, monkeypatch) -> None:
+    script = tmp_path / "account_risk_control.py"
+    script.write_text("print('风控', flush=True)\n", encoding="utf-8")
+    adapter = SauAdapter(Platform.xiaohongshu)
+    monkeypatch.setattr(adapter, "runtime_executable", lambda: sys.executable)
+    monkeypatch.setattr(
+        adapter,
+        "account_command",
+        lambda _action, _account, **_kwargs: ["sau", str(script)],
+    )
+
+    result = asyncio.run(adapter.check("creator"))
+
+    assert result.condition is ExecutionCondition.challenge
 
 
 def test_cookie_paths_are_redacted() -> None:
@@ -516,6 +736,61 @@ def test_full_local_score_predict_publish_metrics_retro_flow(
         captured_at,
     )
     assert report["intervalHits"]["views"] is True
+
+
+def test_retro_rejects_a_snapshot_from_another_publication() -> None:
+    published_at = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    completed_at = published_at + timedelta(hours=73)
+    prediction = {"id": "prediction-one", "frozenAt": published_at.isoformat(), "ranges": {}}
+    snapshot = {
+        "id": "snapshot-other",
+        "publicationId": "publication-other",
+        "capturedAt": completed_at.isoformat(),
+        "metrics": {},
+    }
+
+    with pytest.raises(ValueError, match="does not match"):
+        build_retro(
+            prediction,
+            snapshot,
+            published_at.isoformat(),
+            completed_at,
+            publication_id="publication-expected",
+        )
+
+
+def test_cli_retro_requires_and_checks_the_publication_identity(tmp_path: Path) -> None:
+    published_at = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    captured_at = published_at + timedelta(hours=73)
+    prediction_path = tmp_path / "prediction.json"
+    snapshot_path = tmp_path / "snapshot.json"
+    prediction_path.write_text(json.dumps({
+        "id": "prediction-one",
+        "frozenAt": published_at.isoformat(),
+        "ranges": {},
+    }), encoding="utf-8")
+    snapshot_path.write_text(json.dumps({
+        "id": "snapshot-other",
+        "publicationId": "publication-other",
+        "capturedAt": captured_at.isoformat(),
+        "metrics": {},
+    }), encoding="utf-8")
+
+    result = CliRunner().invoke(app, [
+        "retro",
+        "run",
+        "--prediction",
+        str(prediction_path),
+        "--snapshot",
+        str(snapshot_path),
+        "--published-at",
+        published_at.isoformat(),
+        "--publication-id",
+        "publication-expected",
+    ])
+
+    assert isinstance(result.exception, ValueError)
+    assert "does not match" in str(result.exception)
 
 
 def test_process_crash_is_recoverable_without_duplicate_publish(tmp_path: Path, monkeypatch) -> None:

@@ -4,7 +4,8 @@ import {
   buildPrediction,
   buildRetroReport,
   calculateMvpValidationProgress,
-  activateExperimentalRubric,
+  activateRubricExperimentRecord,
+  createRubricExperimentRecord,
   createScoreCard,
   createStarterRubric,
   freezePrediction,
@@ -24,6 +25,7 @@ import {
   type PlatformVariant,
   type RetroReport,
   type RubricExperiment,
+  type RubricExperimentRecord,
   type RubricVersion,
   type ScoreCard,
 } from "@reviewflow/domain";
@@ -134,6 +136,8 @@ const calibrationSamples = ref<Array<{
   observedPerformance: number;
 }>>([]);
 const formulaExperiment = ref<RubricExperiment | null>(null);
+const rubricVersions = ref<RubricVersion[]>([activeRubric.value]);
+const formulaExperimentHistory = ref<RubricExperimentRecord[]>([]);
 interface PlatformVariantDraft {
   title: string;
   body: string;
@@ -210,6 +214,14 @@ const selectedMetricTask = computed(() =>
   metricTasks.value.find((task) => task.publicationId === retroPublicationId.value) ?? null);
 const selectedPublicationContext = computed(() =>
   publicationContexts.value.find((item) => item.publicationId === retroPublicationId.value) ?? null);
+const visibleRubricVersions = computed(() => [...rubricVersions.value].sort((left, right) =>
+  right.version - left.version || right.createdAt.localeCompare(left.createdAt)));
+const currentFormulaExperimentRecord = computed(() => {
+  const candidateId = formulaExperiment.value?.candidate.id;
+  if (!candidateId) return null;
+  return formulaExperimentHistory.value.find((record) =>
+    record.status === "pending" && record.experiment.candidate.id === candidateId) ?? null;
+});
 
 const upsertPublicationRecord = (record: MvpPublicationRecord): void => {
   const index = publicationRecords.value.findIndex((item) => item.publicationId === record.publicationId);
@@ -837,6 +849,21 @@ const prepareFormulaExperiment = (): void => {
         observedPerformance: sample.observedPerformance,
       })),
     });
+    const record = createRubricExperimentRecord({
+      id: crypto.randomUUID(),
+      experiment: formulaExperiment.value,
+      context: {
+        platform: retroPlatform.value,
+        accountId: accountIds.value[retroPlatform.value],
+        kind: content.value.kind,
+      },
+      sampleIds: samples.map((sample) => sample.retro.id),
+    });
+    formulaExperimentHistory.value = [record, ...formulaExperimentHistory.value];
+    rubricVersions.value = [
+      ...rubricVersions.value.filter((version) => version.id !== record.experiment.candidate.id),
+      record.experiment.candidate,
+    ];
     statusMessage.value = formulaExperiment.value.evaluation.eligible
       ? "公式回测通过，等待你明确接受"
       : formulaExperiment.value.evaluation.reason;
@@ -848,12 +875,29 @@ const prepareFormulaExperiment = (): void => {
 const acceptFormulaExperiment = (): void => {
   if (!formulaExperiment.value) return;
   try {
-    activeRubric.value = activateExperimentalRubric(
-      activeRubric.value,
-      formulaExperiment.value.candidate,
-      formulaExperiment.value.evaluation,
-      true,
-    );
+    const samples = currentCalibrationSamples();
+    const pendingRecord = currentFormulaExperimentRecord.value ?? createRubricExperimentRecord({
+      id: crypto.randomUUID(),
+      experiment: formulaExperiment.value,
+      context: {
+        platform: retroPlatform.value,
+        accountId: accountIds.value[retroPlatform.value],
+        kind: content.value.kind,
+      },
+      sampleIds: samples.map((sample) => sample.retro.id),
+    });
+    const activation = activateRubricExperimentRecord({
+      current: activeRubric.value,
+      record: pendingRecord,
+      versions: rubricVersions.value,
+      acceptedAt: nowIso(),
+    });
+    activeRubric.value = activation.activeRubric;
+    rubricVersions.value = activation.versions;
+    formulaExperimentHistory.value = [
+      activation.record,
+      ...formulaExperimentHistory.value.filter((record) => record.id !== activation.record.id),
+    ];
     formulaExperiment.value = null;
     scoreCard.value = null;
     scoredFingerprint.value = "";
@@ -902,6 +946,8 @@ onMounted(async () => {
         metricSource?: "manual" | "csv";
         metricDraft?: Record<MetricName, number>;
         formulaExperiment?: RubricExperiment | null;
+        rubricVersions?: RubricVersion[];
+        formulaExperimentHistory?: RubricExperimentRecord[];
         onboardingComplete?: boolean;
         lastPublishJobId?: string;
         manifest?: PublishManifest | null;
@@ -924,6 +970,12 @@ onMounted(async () => {
       if (saved?.historySamples) historySamples.value = saved.historySamples;
       if (saved?.publicationRecords) publicationRecords.value = saved.publicationRecords;
       if (saved?.activeRubric) activeRubric.value = saved.activeRubric;
+      rubricVersions.value = saved?.rubricVersions?.length
+        ? saved.rubricVersions
+        : [activeRubric.value];
+      if (!rubricVersions.value.some((version) => version.id === activeRubric.value.id)) {
+        rubricVersions.value.push(activeRubric.value);
+      }
       if (saved?.calibrationSamples) calibrationSamples.value = saved.calibrationSamples;
       if (saved?.platformVariantDrafts) platformVariantDrafts.value = saved.platformVariantDrafts;
       if (saved?.variantEditorPlatform) variantEditorPlatform.value = saved.variantEditorPlatform;
@@ -935,6 +987,7 @@ onMounted(async () => {
       if (saved?.metricSource) metricSource.value = saved.metricSource;
       if (saved?.metricDraft) metricDraft.value = saved.metricDraft;
       if (saved?.formulaExperiment) formulaExperiment.value = saved.formulaExperiment;
+      if (saved?.formulaExperimentHistory) formulaExperimentHistory.value = saved.formulaExperimentHistory;
       if (saved?.lastPublishJobId) lastPublishJobId.value = saved.lastPublishJobId;
       if (saved?.manifest) manifest.value = saved.manifest;
       if (saved?.publishJobs) publishJobs.value = saved.publishJobs;
@@ -1004,7 +1057,7 @@ onMounted(async () => {
 });
 
 let saveTimer: number | undefined;
-watch([content, scoreCard, predictions, selectedPlatforms, accountIds, benchmarks, historySamples, publicationRecords, activeRubric, calibrationSamples, onboardingComplete, lastPublishJobId, manifest, publishJobs, metricTasks, publicationContexts, platformVariantDrafts, variantEditorPlatform, retro, retroPlatform, retroPublicationId, retroPublishedAt, retroExternalRef, metricSource, metricDraft, formulaExperiment], () => {
+watch([content, scoreCard, predictions, selectedPlatforms, accountIds, benchmarks, historySamples, publicationRecords, activeRubric, rubricVersions, calibrationSamples, onboardingComplete, lastPublishJobId, manifest, publishJobs, metricTasks, publicationContexts, platformVariantDrafts, variantEditorPlatform, retro, retroPlatform, retroPublicationId, retroPublishedAt, retroExternalRef, metricSource, metricDraft, formulaExperiment, formulaExperimentHistory], () => {
   if (!workspaceReady.value || !window.reviewflow) return;
   window.clearTimeout(saveTimer);
   saveTimer = window.setTimeout(() => {
@@ -1019,6 +1072,7 @@ watch([content, scoreCard, predictions, selectedPlatforms, accountIds, benchmark
       historySamples: historySamples.value,
       publicationRecords: publicationRecords.value,
       activeRubric: activeRubric.value,
+      rubricVersions: rubricVersions.value,
       calibrationSamples: calibrationSamples.value,
       platformVariantDrafts: platformVariantDrafts.value,
       variantEditorPlatform: variantEditorPlatform.value,
@@ -1030,6 +1084,7 @@ watch([content, scoreCard, predictions, selectedPlatforms, accountIds, benchmark
       metricSource: metricSource.value,
       metricDraft: metricDraft.value,
       formulaExperiment: formulaExperiment.value,
+      formulaExperimentHistory: formulaExperimentHistory.value,
       onboardingComplete: onboardingComplete.value,
       lastPublishJobId: lastPublishJobId.value,
       manifest: manifest.value,
@@ -1312,7 +1367,7 @@ watch([content, scoreCard, predictions, selectedPlatforms, accountIds, benchmark
         <section class="formula-card">
           <div class="formula-version"><span>当前公式</span><strong>v{{ activeRubric.version }}</strong><small>{{ activeRubric.name }}</small></div>
           <div class="formula-progress">
-            <span>{{ platformLabel(retroPlatform) }} · {{ content.kind === 'video' ? '视频' : '图文' }}</span>
+            <span>{{ platformLabel(retroPlatform) }} · {{ accountIds[retroPlatform] }} · {{ content.kind === 'video' ? '视频' : '图文' }}</span>
             <strong>{{ currentCalibrationSamples().length }} / 10</strong>
             <div><i :style="{ width: `${Math.min(100, currentCalibrationSamples().length * 10)}%` }" /></div>
           </div>
@@ -1322,8 +1377,30 @@ watch([content, scoreCard, predictions, selectedPlatforms, accountIds, benchmark
               {{ formulaExperiment.evaluation.eligible ? '回测通过' : '暂不升级' }}
             </span>
             <strong>排序一致性 {{ formulaExperiment.evaluation.rankingConsistency.toFixed(2) }}</strong>
-            <small>{{ formulaExperiment.evaluation.reason }}</small>
+            <small>{{ formulaExperiment.evaluation.reason }} · 样本 {{ formulaExperiment.evaluation.sampleSize }} · 成对退化 {{ formulaExperiment.evaluation.pairwiseRegressions }}</small>
+            <div class="formula-weight-grid" aria-label="实验权重对比">
+              <article v-for="dimension in formulaExperiment.candidate.dimensions" :key="dimension.code">
+                <span><code>{{ dimension.code }}</code>{{ dimension.name }}</span>
+                <strong>{{ ((activeRubric.dimensions.find((item) => item.code === dimension.code)?.weight ?? 0) * 100).toFixed(1) }}% → {{ (dimension.weight * 100).toFixed(1) }}%</strong>
+                <small>相关性 {{ formulaExperiment.correlations[dimension.code].toFixed(2) }}</small>
+              </article>
+            </div>
             <button class="primary-action" :disabled="!formulaExperiment.evaluation.eligible" @click="acceptFormulaExperiment">接受并创建 v{{ activeRubric.version + 1 }}</button>
+          </div>
+          <div v-if="visibleRubricVersions.length" class="formula-history">
+            <div class="formula-history-head"><strong>公式版本</strong><small>保留已退役、实验中与当前版本</small></div>
+            <article v-for="version in visibleRubricVersions" :key="version.id">
+              <span>v{{ version.version }}</span><strong>{{ version.name }}</strong><em>{{ version.status }}</em>
+              <small>{{ new Date(version.createdAt).toLocaleString() }}<template v-if="version.basedOn"> · 基于 {{ version.basedOn }}</template></small>
+            </article>
+          </div>
+          <div v-if="formulaExperimentHistory.length" class="formula-audit">
+            <div class="formula-history-head"><strong>实验记录</strong><small>记录样本上下文和接受时间</small></div>
+            <article v-for="record in formulaExperimentHistory.slice(0, 5)" :key="record.id">
+              <span>{{ record.status === 'accepted' ? '已接受' : '待确认' }}</span>
+              <strong>{{ platformLabel(record.context.platform) }} · {{ record.context.accountId }} · {{ record.context.kind === 'video' ? '视频' : '图文' }}</strong>
+              <small>{{ record.sampleIds.length }} 条样本 · {{ new Date(record.createdAt).toLocaleString() }}<template v-if="record.acceptedAt"> · 接受于 {{ new Date(record.acceptedAt).toLocaleString() }}</template></small>
+            </article>
           </div>
         </section>
       </div>

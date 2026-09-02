@@ -256,7 +256,6 @@ async def _xiaohongshu(args: argparse.Namespace, account_file: Path) -> int:
             **common,
         )
     await uploader.main()
-    _emit({"condition": "success", "message": "Uploader workflow completed"})
     return 0
 
 
@@ -312,7 +311,6 @@ async def _douyin(args: argparse.Namespace, account_file: Path) -> int:
             **common,
         )
         await uploader.douyin_upload_note()
-    _emit({"condition": "success", "message": "Uploader workflow completed"})
     return 0
 
 
@@ -453,7 +451,12 @@ def run(argv: list[str] | None = None) -> int:
         lowered = text.lower()
         if "cookie" in lowered or "login" in lowered or "登录" in text:
             condition, code = "account_auth_required", 20
-        elif any(marker in lowered for marker in ("captcha", "challenge", "verification")) or "验证码" in text or "安全验证" in text:
+        elif (
+            any(marker in lowered for marker in ("captcha", "challenge", "verification", "risk control"))
+            or "验证码" in text
+            or "安全验证" in text
+            or "风控" in text
+        ):
             condition, code = "challenge", 21
         elif "locator" in lowered or "selector" in lowered or "timeout" in lowered:
             condition, code = "selector_drift", 22

@@ -5,6 +5,7 @@ import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, statSync
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import Ajv from "ajv";
+import { AiConfigStore, type AiConfig } from "./ai-config-store.js";
 import { buildDiagnosticsSnapshot } from "./diagnostics-export.js";
 import { importMediaFiles, isManagedMediaPath } from "./media-library.js";
 import { isAllowedSidecarPath } from "./sidecar-request-policy.js";
@@ -18,11 +19,6 @@ let sidecar: ChildProcess | null = null;
 let sidecarStatus: "starting" | "ready" | "missing" | "stopped" = "starting";
 const approvedMediaPaths = new Set<string>();
 const assessmentCodes = ["ER", "HP", "QL", "NA", "AB", "SR", "SAT"] as const;
-
-interface AiConfig {
-  baseUrl: string;
-  model: string;
-}
 
 interface PublisherSettings {
   enabled: boolean;
@@ -118,8 +114,6 @@ const assertApprovedManifestMedia = (body: unknown): void => {
   }
 };
 
-const configPath = () => join(app.getPath("userData"), "ai-config.json");
-const secretPath = () => join(app.getPath("userData"), "secrets.bin");
 const publisherSettingsPath = () => join(app.getPath("userData"), "publisher-settings.json");
 const databasePath = () => join(app.getPath("userData"), "data", "reviewflow.sqlite3");
 const mediaLibraryPath = () => join(app.getPath("userData"), "media");
@@ -129,6 +123,7 @@ const publisherRuntimePath = (): string => app.isPackaged
 const biliupRuntimePath = (): string => app.isPackaged
   ? join(process.resourcesPath, "publisher", "biliup.exe")
   : join(resolve(moduleDir, "../../.."), "services", "publisher", "vendor-bin", "biliup.exe");
+const aiConfigStore = (): AiConfigStore => new AiConfigStore(app.getPath("userData"), safeStorage);
 
 const writeAtomic = (path: string, data: string | Buffer): void => {
   mkdirSync(dirname(path), { recursive: true });
@@ -164,20 +159,6 @@ const loginCommand = (input: { platform: string; accountId: string }): string =>
   const safeAccount = input.accountId.replaceAll("'", "''");
   const headed = input.platform === "bilibili" ? "" : " --headed";
   return `& '${safeExecutable}' ${input.platform} login --account '${safeAccount}'${headed}`;
-};
-
-const readConfig = (): AiConfig => {
-  try {
-    const parsed = JSON.parse(readFileSync(configPath(), "utf8")) as AiConfig;
-    return { baseUrl: parsed.baseUrl, model: parsed.model };
-  } catch {
-    return { baseUrl: "https://api.openai.com/v1", model: "gpt-4.1-mini" };
-  }
-};
-
-const getApiKey = (): string => {
-  if (!safeStorage.isEncryptionAvailable() || !existsSync(secretPath())) return "";
-  return safeStorage.decryptString(readFileSync(secretPath()));
 };
 
 const waitForSidecar = async (): Promise<void> => {
@@ -454,23 +435,15 @@ app.whenReady().then(() => {
     return payload;
   });
 
-  ipcMain.handle("ai:get-config", () => ({ ...readConfig(), hasKey: Boolean(getApiKey()) }));
+  ipcMain.handle("ai:get-config", () => aiConfigStore().getSummary());
   ipcMain.handle("ai:save-config", (_event, input: AiConfig & { apiKey?: string }) => {
-    const baseUrl = new URL(input.baseUrl);
-    if (baseUrl.protocol !== "https:" && baseUrl.hostname !== "127.0.0.1" && baseUrl.hostname !== "localhost") {
-      throw new Error("AI base URL must use HTTPS or localhost");
-    }
-    writeAtomic(configPath(), JSON.stringify({ baseUrl: input.baseUrl.replace(/\/$/, ""), model: input.model }));
-    if (input.apiKey) {
-      if (!safeStorage.isEncryptionAvailable()) throw new Error("Windows credential encryption is unavailable");
-      writeAtomic(secretPath(), safeStorage.encryptString(input.apiKey));
-    }
-    return { ...readConfig(), hasKey: Boolean(getApiKey()) };
+    return aiConfigStore().save(input);
   });
 
   ipcMain.handle("ai:score", async (_event, content: Record<string, unknown>) => {
-    const config = readConfig();
-    const apiKey = getApiKey();
+    const store = aiConfigStore();
+    const config = store.getConfig();
+    const apiKey = store.getApiKey();
     if (!apiKey) throw new Error("请先在设置中保存 API Key");
     const response = await fetch(`${config.baseUrl}/chat/completions`, {
       method: "POST",

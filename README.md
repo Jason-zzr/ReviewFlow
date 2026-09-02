@@ -13,7 +13,7 @@ The first release supports Xiaohongshu, Douyin, and Bilibili through a guarded a
 - Deep-frozen predictions and SHA-256 publish manifests whose idempotency keys are digest-bound and atomically claimed before any uploader starts.
 - Resumable SQLite T+3 collection queue with atomic leases, manual/CSV metric snapshots, and Bilibili public metric collection.
 - A local 30-day validation tracker for the eight-publication target and due-only T+3 retrospective completion rate.
-- Ten-sample, same-context rubric experiments with unique one-to-one retrospective linkage, complete-sample validation, tie-aware correlations, strict pairwise non-regression, and explicit activation.
+- Ten-sample, same-context rubric experiments with unique one-to-one retrospective linkage, complete-sample validation, visible weight/correlation comparisons, strict pairwise non-regression, explicit activation, and persisted version/audit history.
 - Restart recovery for the immutable publish manifest, all Sidecar publication jobs, T+3 task states, and each publication's frozen prediction/score context through an exact Electron request allowlist.
 - Electron `safeStorage` for BYOK credentials; the renderer never receives stored API keys.
 - Portable workspace bundles include managed media, verify SHA-256 integrity on import, and retain legacy JSON import compatibility.
@@ -54,8 +54,10 @@ reviewflow content score .\assessment.json
 reviewflow content predict .\history.json --score 8
 reviewflow publish preview .\manifest.json
 reviewflow publish execute .\manifest.json --confirm <digest> --idempotency-key <stable-key>
-reviewflow retro run --prediction .\prediction.json --snapshot .\snapshot.json --published-at 2026-09-01T00:00:00Z
+reviewflow retro run --prediction .\prediction.json --snapshot .\snapshot.json --published-at 2026-09-01T00:00:00Z --publication-id <confirmed-publication-id>
 ```
+
+For desktop-parity prediction, the input object includes `id`, `contentId`, `platform`, `accountId`, `kind`, `history`, and `benchmarks`. The CLI then applies the same context filtering, snapshot deduplication, six-metric ranges, bucket probabilities, and baseline rules as the desktop domain module. Legacy metric-row arrays remain supported for scripts that only need a compact views interval.
 
 The desktop starts the Python sidecar with a random session token. Real publishing is disabled by default. Enable it explicitly from **模型设置 → 发布安全开关**; changing the switch restarts the authenticated local Sidecar so the new policy takes effect.
 
@@ -66,7 +68,7 @@ $env:REVIEWFLOW_LIVE_PUBLISH = "1"
 npm.cmd run dev
 ```
 
-The environment override governs the whole process and makes the desktop switch read-only. Neither method bypasses exact manifest confirmation. QR codes, captchas, risk controls, and other platform challenges always require the user.
+The environment override governs the whole process and makes the desktop switch read-only. Neither method bypasses exact manifest confirmation. QR codes, captchas, risk controls, and other platform challenges interrupt the publisher process and always require the user; a runtime completion message without platform publish evidence is never synthesized as success.
 
 Build a Windows installer and both embedded Python executables with:
 

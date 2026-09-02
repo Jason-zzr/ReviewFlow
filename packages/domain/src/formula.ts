@@ -31,6 +31,56 @@ export interface RubricExperiment {
   correlations: Record<RubricDimensionCode, number>;
 }
 
+export interface RubricExperimentContext {
+  platform: Platform;
+  accountId: string;
+  kind: ContentKind;
+}
+
+export interface RubricExperimentRecord {
+  readonly id: string;
+  readonly experiment: RubricExperiment;
+  readonly context: RubricExperimentContext;
+  readonly sampleIds: readonly string[];
+  readonly status: "pending" | "accepted";
+  readonly createdAt: string;
+  readonly acceptedAt?: string;
+  readonly activatedRubricId?: string;
+}
+
+export const createRubricExperimentRecord = (input: {
+  id: string;
+  experiment: RubricExperiment;
+  context: RubricExperimentContext;
+  sampleIds: string[];
+}): RubricExperimentRecord => {
+  const id = input.id.trim();
+  const accountId = input.context.accountId.trim();
+  const sampleIds = input.sampleIds.map((sampleId) => sampleId.trim());
+  if (!id || !accountId) throw new Error("Formula experiment record requires an ID and account context");
+  if (sampleIds.some((sampleId) => !sampleId) || new Set(sampleIds).size !== sampleIds.length) {
+    throw new Error("Formula experiment record requires unique non-blank sample IDs");
+  }
+  const candidate = Object.freeze({
+    ...input.experiment.candidate,
+    dimensions: Object.freeze(input.experiment.candidate.dimensions.map((dimension) =>
+      Object.freeze({ ...dimension }))),
+  }) as RubricVersion;
+  const experiment = Object.freeze({
+    candidate,
+    evaluation: Object.freeze({ ...input.experiment.evaluation }),
+    correlations: Object.freeze({ ...input.experiment.correlations }),
+  }) as RubricExperiment;
+  return Object.freeze({
+    id,
+    experiment,
+    context: Object.freeze({ ...input.context, accountId }),
+    sampleIds: Object.freeze(sampleIds),
+    status: "pending" as const,
+    createdAt: candidate.createdAt,
+  });
+};
+
 const ranks = (values: number[]): number[] => {
   const ordered = values
     .map((value, index) => ({ value, index }))
@@ -132,6 +182,41 @@ export const activateExperimentalRubric = (
     status: "active",
     basedOn: current.id,
   };
+};
+
+export const activateRubricExperimentRecord = (input: {
+  current: RubricVersion;
+  record: RubricExperimentRecord;
+  versions: RubricVersion[];
+  acceptedAt?: string;
+}): {
+  activeRubric: RubricVersion;
+  versions: RubricVersion[];
+  record: RubricExperimentRecord;
+} => {
+  if (input.record.status !== "pending") throw new Error("Only a pending formula experiment can be accepted");
+  const acceptedAt = input.acceptedAt ?? new Date().toISOString();
+  if (!Number.isFinite(new Date(acceptedAt).getTime()) || !/(?:Z|[+-]\d{2}:\d{2})$/i.test(acceptedAt)) {
+    throw new Error("Formula experiment acceptance time must be a timezone-aware timestamp");
+  }
+  const activeRubric = activateExperimentalRubric(
+    input.current,
+    input.record.experiment.candidate,
+    input.record.experiment.evaluation,
+    true,
+  );
+  const versionsById = new Map(input.versions.map((version) => [version.id, { ...version }]));
+  versionsById.set(input.current.id, { ...input.current, status: "retired" });
+  versionsById.set(activeRubric.id, activeRubric);
+  const versions = [...versionsById.values()].sort((left, right) =>
+    left.version - right.version || left.createdAt.localeCompare(right.createdAt));
+  const record = Object.freeze({
+    ...input.record,
+    status: "accepted" as const,
+    acceptedAt,
+    activatedRubricId: activeRubric.id,
+  });
+  return { activeRubric, versions, record };
 };
 
 export const suggestExperimentalRubric = (input: {

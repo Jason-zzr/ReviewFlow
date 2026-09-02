@@ -29,7 +29,7 @@ The Windows CI `verify` job enforces publisher dependency provenance, `npm.cmd r
 - [ ] Confirm a video manifest with more than one video file is rejected before execution.
 - [ ] Confirm a stopped uploader becomes `unknown`, not `published`.
 - [ ] Force-end the desktop process, wait for the parent watchdog, and confirm no packaged Sidecar process remains before uninstalling.
-- [ ] Confirm a challenge or expired Cookie stops with `userActionRequired`.
+- [ ] Confirm a challenge, risk-control marker, or expired Cookie interrupts the publisher process and stops with `userActionRequired`.
 - [ ] Confirm the immutable manifest, all publication job statuses, frozen publication contexts, and T+3 task states recover after an application restart.
 - [ ] Confirm concurrent T+3 collectors claim one task once, an abandoned lease becomes recoverable, and failed automatic collection requests manual input.
 

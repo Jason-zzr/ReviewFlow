@@ -98,7 +98,15 @@ function Wait-ForUninstallCompletion {
 
     $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
     while ([DateTime]::UtcNow -lt $deadline) {
-        $desktopRemoved = -not (Test-Path -LiteralPath $DesktopExecutable -PathType Leaf)
+        try {
+            $desktopRemoved = -not (Test-Path -LiteralPath $DesktopExecutable -PathType Leaf)
+        }
+        catch [System.UnauthorizedAccessException] {
+            # NSIS can briefly lock the install directory while its child
+            # uninstaller finishes. Treat that window as "still present" and
+            # keep polling instead of failing the smoke test prematurely.
+            $desktopRemoved = $false
+        }
         if ($desktopRemoved -and @(Get-ActiveUninstallers -InstalledPath $InstalledPath).Count -eq 0) {
             return $true
         }
