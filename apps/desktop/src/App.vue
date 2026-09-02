@@ -34,6 +34,7 @@ import PublishDialog from "./components/PublishDialog.vue";
 import ScoreLedger from "./components/ScoreLedger.vue";
 import OnboardingDialog from "./components/OnboardingDialog.vue";
 import { recoverOnboardingState } from "./onboarding-state.js";
+import { toBridgePayload } from "./bridge-payload.js";
 import {
   refreshPublishJobs,
   upsertPublishJob,
@@ -270,7 +271,7 @@ const scoreContent = async (): Promise<void> => {
     let assessments = heuristicAssessments();
     let model = "local-rules";
     if (window.reviewflow && aiConfig.value.hasKey) {
-      const result = await window.reviewflow.scoreWithAi(content.value) as {
+      const result = await window.reviewflow.scoreWithAi(toBridgePayload(content.value)) as {
         assessments: DimensionAssessment[];
         model: string;
         promptVersion: string;
@@ -389,7 +390,7 @@ const openPublishPreview = async (): Promise<void> => {
       title: variant.title,
       body: variant.body,
       tags,
-      mediaPaths: content.value.mediaPaths,
+      mediaPaths: [...content.value.mediaPaths],
       ...(variant.scheduledAt ? { scheduledAt: new Date(variant.scheduledAt).toISOString() } : {}),
       ...(platform === "bilibili" ? { bilibiliTid: variant.bilibiliTid } : {}),
     };
@@ -405,7 +406,7 @@ const openPublishPreview = async (): Promise<void> => {
 
 const resumePublishPreview = async (): Promise<void> => {
   if (!manifest.value) return;
-  await presentPublishManifest(manifest.value);
+  await presentPublishManifest(toBridgePayload(manifest.value));
 };
 
 const confirmPublish = async (): Promise<void> => {
@@ -417,7 +418,7 @@ const confirmPublish = async (): Promise<void> => {
       path: "/v1/publish/execute",
       method: "POST",
       body: {
-        manifest: manifest.value,
+        manifest: toBridgePayload(manifest.value),
         confirmationDigest: manifest.value.digest,
         idempotencyKey: `${manifest.value.id}:${manifest.value.digest.slice(0, 16)}`,
       },
@@ -562,7 +563,7 @@ const importMetricsAndRunRetro = async (): Promise<void> => {
       body: {
         publicationId: retroPublicationId.value.trim(),
         source: metricSource.value,
-        metrics: metricDraft.value,
+        metrics: toBridgePayload(metricDraft.value),
       },
     }) as PerformanceSnapshot;
     completeRetro(snapshot);
@@ -1061,7 +1062,7 @@ watch([content, scoreCard, predictions, selectedPlatforms, accountIds, benchmark
   if (!workspaceReady.value || !window.reviewflow) return;
   window.clearTimeout(saveTimer);
   saveTimer = window.setTimeout(() => {
-    void window.reviewflow?.saveWorkspace({
+    void window.reviewflow?.saveWorkspace(toBridgePayload({
       content: content.value,
       scoreCard: scoreCard.value,
       scoredFingerprint: scoredFingerprint.value,
@@ -1091,7 +1092,7 @@ watch([content, scoreCard, predictions, selectedPlatforms, accountIds, benchmark
       publishJobs: publishJobs.value,
       metricTasks: metricTasks.value,
       publicationContexts: publicationContexts.value,
-    });
+    }));
   }, 350);
 }, { deep: true });
 </script>

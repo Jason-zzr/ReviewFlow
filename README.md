@@ -39,11 +39,10 @@ npm.cmd run dev
 Run checks:
 
 ```powershell
-npm.cmd run typecheck
-npm.cmd run test --workspace @reviewflow/domain
-services\publisher\.venv\Scripts\python.exe -m pytest services\publisher\tests
-npm.cmd run build
+npm.cmd run check
 ```
+
+`npm.cmd run check` covers TypeScript type checking, domain/desktop/publisher tests, production builds, and three real-Electron renderer flows for video, image/text, and platform-challenge handling. The renderer flows use an isolated fixture preload: they do not read user credentials, contact a platform, or claim live publishing success.
 
 Core CLI examples:
 

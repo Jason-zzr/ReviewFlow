@@ -15,6 +15,7 @@ __pycache__/
 *.py[cod]
 *.egg-info/
 apps/desktop/release/
+apps/desktop/test-results/
 services/publisher/build/
 services/publisher/dist/
 services/publisher/.wheel-cache/

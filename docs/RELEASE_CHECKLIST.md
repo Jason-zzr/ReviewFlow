@@ -6,6 +6,7 @@
 - [ ] Install `services/publisher[dev,live]` with `constraints-live.txt`.
 - [ ] Confirm the omnipost source commit equals `012caee407f2ee9cca8857579b23721c8b6e7f63`.
 - [ ] Run `npm.cmd run check`.
+- [ ] Confirm all three fixture-only real-Electron renderer scenarios pass; they must not read credentials or contact a platform.
 - [ ] Run `scripts/smoke-publisher.ps1 -MinimalPath` and confirm `doctor` plus all three unauthenticated platform checks pass.
 - [ ] Run `npm.cmd run package:win`.
 - [ ] Confirm the installer contains `reviewflow-sidecar.exe` and `reviewflow-sau.exe`.

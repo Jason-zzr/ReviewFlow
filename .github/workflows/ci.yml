@@ -37,6 +37,14 @@ jobs:
         run: services\publisher\.venv\Scripts\python.exe scripts/verify-publisher-deps.py
       - name: Run the complete local quality gate
         run: npm.cmd run check
+      - name: Upload renderer E2E diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: renderer-e2e-diagnostics-${{ github.sha }}
+          if-no-files-found: ignore
+          retention-days: 7
+          path: apps/desktop/test-results/**
       - name: Audit high-severity Node dependencies
         run: npm.cmd audit --audit-level=high
 
