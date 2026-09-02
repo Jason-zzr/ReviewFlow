@@ -8,8 +8,8 @@ The first release supports Xiaohongshu, Douyin, and Bilibili through a guarded a
 
 ## What works
 
-- Equal-weight seven-dimension starter rubric with evidence for every score.
-- Independent account × platform × content-type interval predictions with sample-size confidence.
+- Equal-weight seven-dimension starter rubric with evidence and exact, unique dimension coverage for every score.
+- Independent account × platform × content-type interval predictions that ignore unusable metric rows, fall back to benchmarks, and report valid sample-size confidence.
 - Deep-frozen predictions and SHA-256 publish manifests whose idempotency keys are digest-bound.
 - Resumable SQLite T+3 collection queue, manual/CSV metric snapshots, and Bilibili public metric collection.
 - A local 30-day validation tracker for the eight-publication target and due-only T+3 retrospective completion rate.
@@ -17,6 +17,7 @@ The first release supports Xiaohongshu, Douyin, and Bilibili through a guarded a
 - Electron `safeStorage` for BYOK credentials; the renderer never receives stored API keys.
 - Portable workspace bundles include managed media, verify SHA-256 integrity on import, and retain legacy JSON import compatibility.
 - Credential-free diagnostic export.
+- First-run onboarding resumes until its completion state is explicitly persisted.
 - User-selected media is copied into the application-managed local media library; original files are never modified.
 - Authenticated localhost FastAPI sidecar and `reviewflow` CLI.
 - Electron process-tree shutdown plus a Sidecar parent watchdog prevent orphaned publisher runtimes after restart, exit, or crash.

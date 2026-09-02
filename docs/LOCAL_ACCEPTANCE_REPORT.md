@@ -7,9 +7,9 @@ Scope: Windows local build and fixture-based acceptance only
 
 The local MVP implementation is buildable and its Windows x64 installer is available at `apps/desktop/release/ReviewFlow-0.1.0-x64-setup.exe`.
 
-- TypeScript domain tests: 16 passed, including the 30-day publication, due-only T+3 completion-rate, and snapshot capture-time contracts.
-- Electron main-process tests: 8 passed for managed media boundaries, portable workspace bundles, workspace persistence and migration-version enforcement.
-- Python publisher tests: 49 passed, including publisher schema-version persistence, T+3 snapshot capture-time parity, and Windows parent-process lifecycle handling.
+- TypeScript domain tests: 19 passed, including strict scoring dimensions, valid-sample prediction fallback, finite score adjustment, the 30-day publication target, due-only T+3 completion rate, and snapshot capture-time contracts.
+- Electron tests: 9 passed for managed media boundaries, portable workspace bundles, workspace persistence, migration-version enforcement, and unfinished onboarding recovery.
+- Python publisher tests: 57 passed, including sequential/partial/future-version migration behavior, account-command output redaction, benchmark prediction input, strict scoring/prediction validation, T+3 snapshot capture-time parity, and Windows parent-process lifecycle handling.
 - npm audit: 0 vulnerabilities at the configured high threshold.
 - Python dependency check: no broken requirements; pinned publisher dependencies verified.
 - Packaged Sidecar: healthy; unauthenticated API request returned 401.
@@ -23,9 +23,9 @@ The local MVP implementation is buildable and its Windows x64 installer is avail
 
 | Artifact | Bytes | SHA-256 |
 | --- | ---: | --- |
-| `ReviewFlow-0.1.0-x64-setup.exe` | 234,891,969 | `b191f7269473f0498a7235d40b505b457ed5fdd58a81afa22b3f92fc6d692f60` |
-| `reviewflow-sidecar.exe` | 14,585,272 | `64ea559dae98df4fc490062f4d9f3462e8a5d4905ea20853378ef77f6b344f78` |
-| `reviewflow-sau.exe` | 99,782,361 | `f05e7ffead54fb052a74db15a85f7f0ed9d2a782e3ef062a5f5596ea6a101198` |
+| `ReviewFlow-0.1.0-x64-setup.exe` | 234,898,903 | `999fb01ad883a0ae60572adff3248003a9f2d4ec55c45ed2e9f5ca44c6bcbe19` |
+| `reviewflow-sidecar.exe` | 14,589,139 | `77f8bfe1e386b1a6241b3c38641116003599b3ee735229c7d8ea4cbb9e656564` |
+| `reviewflow-sau.exe` | 99,782,310 | `49b24494e379b8dc2ec1db13a69b46a8ad15328b3e032de52dc11bf410bf9252` |
 | `biliup.exe` | 33,895,936 | `5500912978355e7a64dbbe86ebd7ade2cd4ec8bbc91e16998e4aea7359d0fcdd` |
 
 ## Outstanding acceptance gate

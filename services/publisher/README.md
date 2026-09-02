@@ -10,6 +10,12 @@ reviewflow-sidecar
 
 No endpoint treats process submission as proof of publication. A successful upstream process is stored as `unknown` until an external URL/ID or a manual confirmation is recorded.
 
+The `account login` and `account check` commands capture uploader output, redact credential values and Cookie paths, and then preserve the uploader's original exit code.
+
 The sidecar also owns a persistent metric collection queue. Due tasks resume whenever the app starts; Bilibili can use its public BV endpoint, while Xiaohongshu and Douyin move to `manual_required` for manual or CSV completion.
+
+Publisher SQLite upgrades are applied sequentially (`v1` base records, `v2` manifest-digest binding, `v3` T+3 queue) in a transaction. A partially applied known migration is safe to resume, while a database from a newer schema version is rejected without downgrade.
+
+`reviewflow content predict` accepts either the legacy history array or an object containing `history` and context-matched `benchmarks` arrays. Rows without a finite, non-negative canonical metric are ignored; account history needs at least three valid rows before it replaces benchmark or cold-start data. `--score`, when supplied, must be finite and between `0` and `10`.
 
 `reviewflow retro run` requires the snapshot JSON to include a timezone-aware `capturedAt`. The snapshot must have been captured at least 72 hours after publication and not after the retrospective completion time.

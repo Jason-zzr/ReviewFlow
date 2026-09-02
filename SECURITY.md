@@ -10,9 +10,11 @@
 - Publish execution requires a digest that matches the immutable preview manifest; every idempotency key is bound to that digest.
 - Media must exist as a local ordinary file and must either have been selected during the current session or resolve inside the application-managed media library created from an earlier user selection. Symlinks resolving outside that directory are rejected.
 - The `sau` executable is resolved to an absolute file before invocation; uploader processes are never launched through a shell.
+- Account `login` and `check` commands capture child-process output and apply the same credential and Cookie-path redaction used by the adapter before writing to the terminal.
 - AI scoring accepts only the seven expected dimensions with integer scores and non-empty evidence.
 - Live publishing is disabled by default. It can be enabled only by the user's explicit desktop safety switch or the host-level `REVIEWFLOW_LIVE_PUBLISH=1` override; either path still requires an exact manifest digest and per-task confirmation.
 - Raw platform metric payloads are recursively size-limited and redact credential-like fields before SQLite persistence, logs, diagnostics, or exports can observe them.
+- Publisher database migrations run in version order inside a write transaction, resume idempotently after partially applied legacy migrations, and refuse databases created by a newer application version.
 
 Do not attach Cookie files, database files, API keys, QR codes, or full diagnostics to public issues. Platform automation may violate platform terms or trigger account restrictions. ReviewFlow does not bypass captchas or risk controls.
 
