@@ -5,6 +5,7 @@ import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, statSync
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import Ajv from "ajv";
+import { buildDiagnosticsSnapshot } from "./diagnostics-export.js";
 import { importMediaFiles, isManagedMediaPath } from "./media-library.js";
 import { loadWorkspacePayload, saveWorkspacePayload } from "./workspace-store.js";
 import { exportWorkspaceBundle, importWorkspaceBundle } from "./workspace-transfer.js";
@@ -415,7 +416,7 @@ app.whenReady().then(() => {
       filters: [{ name: "ReviewFlow diagnostics", extensions: ["json"] }],
     });
     if (result.canceled || !result.filePath) return null;
-    const diagnostics = {
+    const diagnostics = buildDiagnosticsSnapshot({
       generatedAt: new Date().toISOString(),
       appVersion: app.getVersion(),
       platform: process.platform,
@@ -424,8 +425,7 @@ app.whenReady().then(() => {
       sidecarConfigured: Boolean(sidecar),
       sidecarStatus,
       databasePresent: existsSync(databasePath()),
-      note: "Credentials, cookies, API keys, content bodies, media paths, and raw platform payloads are excluded.",
-    };
+    });
     writeFileSync(result.filePath, JSON.stringify(diagnostics, null, 2));
     return result.filePath;
   });

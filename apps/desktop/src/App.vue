@@ -19,6 +19,7 @@ import {
   type PerformanceSnapshot,
   type Platform,
   type Prediction,
+  type PredictionHistorySample,
   type PublishManifest,
   type PlatformVariant,
   type RetroReport,
@@ -31,8 +32,30 @@ import PublishDialog from "./components/PublishDialog.vue";
 import ScoreLedger from "./components/ScoreLedger.vue";
 import OnboardingDialog from "./components/OnboardingDialog.vue";
 import { recoverOnboardingState } from "./onboarding-state.js";
+import {
+  refreshPublishJobs,
+  upsertPublishJob,
+  type PublishJobRecord,
+} from "./publication-jobs.js";
+import {
+  resolvePublicationContext,
+  type PublicationContextRecord,
+} from "./publication-contexts.js";
 
 type ViewName = "today" | "studio" | "retro" | "benchmarks" | "accounts" | "settings";
+
+interface MetricTaskRecord {
+  id: string;
+  platform: Platform;
+  publicationId: string;
+  externalRef: string;
+  publishedAt: string;
+  dueAt: string;
+  nextAttemptAt: string;
+  status: "pending" | "collected" | "manual_required";
+  attempts: number;
+  lastError?: string | null;
+}
 
 const view = ref<ViewName>("studio");
 const activeRubric = ref<RubricVersion>(createStarterRubric("2026-09-01T00:00:00.000Z"));
@@ -66,11 +89,14 @@ const statusMessage = ref("草稿已保存在本地工作台");
 const aiConfig = ref({ baseUrl: "https://api.openai.com/v1", model: "gpt-4.1-mini", apiKey: "", hasKey: false });
 const retroPlatform = ref<Platform>("xiaohongshu");
 const lastPublishJobId = ref("");
+const publishJobs = ref<PublishJobRecord[]>([]);
+const publicationContexts = ref<PublicationContextRecord[]>([]);
 const retroPublicationId = ref("");
 const retroPublishedAt = ref("");
 const retroExternalRef = ref("");
 const metricSource = ref<"manual" | "csv">("manual");
 const metricBusy = ref(false);
+const metricTasks = ref<MetricTaskRecord[]>([]);
 const metricDraft = ref<Record<MetricName, number>>({
   views: 0,
   likes: 0,
@@ -96,13 +122,7 @@ const benchmarkDraft = ref({
   followersGained: 0,
 });
 const benchmarks = ref<BenchmarkSample[]>([]);
-const historySamples = ref<Array<{
-  snapshotId: string;
-  platform: Platform;
-  accountId: string;
-  kind: ContentItem["kind"];
-  metrics: NormalizedMetrics;
-}>>([]);
+const historySamples = ref<PredictionHistorySample[]>([]);
 const publicationRecords = ref<MvpPublicationRecord[]>([]);
 const calibrationSamples = ref<Array<{
   retro: RetroReport;
@@ -181,11 +201,29 @@ const predictionIsCurrent = (platform: Platform): boolean => {
 const activePrediction = computed(() => predictions.value[predictionPlatform.value] ?? null);
 const activeVariantDraft = computed(() => platformVariantDrafts.value[variantEditorPlatform.value] ?? null);
 const mvpValidation = computed(() => calculateMvpValidationProgress(publicationRecords.value));
+const confirmablePublishJobs = computed(() => publishJobs.value.filter((job) => !job.dryRun));
+const selectedPublishJob = computed(() =>
+  publishJobs.value.find((job) => job.id === lastPublishJobId.value) ?? null);
+const selectedMetricTask = computed(() =>
+  metricTasks.value.find((task) => task.publicationId === retroPublicationId.value) ?? null);
+const selectedPublicationContext = computed(() =>
+  publicationContexts.value.find((item) => item.publicationId === retroPublicationId.value) ?? null);
 
 const upsertPublicationRecord = (record: MvpPublicationRecord): void => {
   const index = publicationRecords.value.findIndex((item) => item.publicationId === record.publicationId);
   if (index >= 0) publicationRecords.value[index] = { ...publicationRecords.value[index], ...record };
   else publicationRecords.value.push(record);
+};
+
+const upsertMetricTask = (task: MetricTaskRecord): void => {
+  metricTasks.value = [task, ...metricTasks.value.filter((item) => item.id !== task.id)];
+};
+
+const upsertPublicationContext = (record: PublicationContextRecord): void => {
+  publicationContexts.value = [
+    record,
+    ...publicationContexts.value.filter((item) => item.publicationId !== record.publicationId),
+  ];
 };
 
 const readiness = computed(() => {
@@ -258,11 +296,7 @@ const predictContent = (): void => {
       platform,
       accountId: accountIds.value[platform],
       kind: content.value.kind,
-      history: historySamples.value
-        .filter((sample) => sample.platform === platform
-          && sample.accountId === accountIds.value[platform]
-          && sample.kind === content.value.kind)
-        .map((sample) => sample.metrics),
+      history: historySamples.value,
       benchmarks: benchmarks.value,
       scoreComposite: scoreCard.value.composite,
     });
@@ -295,6 +329,27 @@ const togglePlatform = (platform: Platform): void => {
     ensureVariantDraft(platform);
     variantEditorPlatform.value = platform;
   }
+};
+
+const presentPublishManifest = async (value: PublishManifest): Promise<void> => {
+  manifest.value = value;
+  publishWarnings.value = value.variants.some((variant) => variant.mediaPaths.length === 0)
+    ? ["请选择至少一个本地素材文件"]
+    : [];
+  if (window.reviewflow) {
+    try {
+      const preview = await window.reviewflow.sidecarRequest({
+        path: "/v1/publish/preview",
+        method: "POST",
+        body: { manifest: value },
+      }) as { warnings: string[]; livePublishingEnabled: boolean };
+      publishWarnings.value = preview.warnings;
+      liveEnabled.value = preview.livePublishingEnabled;
+    } catch {
+      publishWarnings.value.push("发布 sidecar 尚未就绪；当前只能查看本地摘要");
+    }
+  }
+  publishDialogOpen.value = true;
 };
 
 const openPublishPreview = async (): Promise<void> => {
@@ -331,22 +386,12 @@ const openPublishPreview = async (): Promise<void> => {
     createdAt: nowIso(),
     variants,
   };
-  manifest.value = await sealManifest(draft);
-  publishWarnings.value = content.value.mediaPaths.length === 0 ? ["请选择至少一个本地素材文件"] : [];
-  if (window.reviewflow) {
-    try {
-      const preview = await window.reviewflow.sidecarRequest({
-        path: "/v1/publish/preview",
-        method: "POST",
-        body: { manifest: manifest.value },
-      }) as { warnings: string[]; livePublishingEnabled: boolean };
-      publishWarnings.value = preview.warnings;
-      liveEnabled.value = preview.livePublishingEnabled;
-    } catch {
-      publishWarnings.value.push("发布 sidecar 尚未就绪；当前只能查看本地摘要");
-    }
-  }
-  publishDialogOpen.value = true;
+  await presentPublishManifest(await sealManifest(draft));
+};
+
+const resumePublishPreview = async (): Promise<void> => {
+  if (!manifest.value) return;
+  await presentPublishManifest(manifest.value);
 };
 
 const confirmPublish = async (): Promise<void> => {
@@ -362,7 +407,8 @@ const confirmPublish = async (): Promise<void> => {
         confirmationDigest: manifest.value.digest,
         idempotencyKey: `${manifest.value.id}:${manifest.value.digest.slice(0, 16)}`,
       },
-    }) as { id: string; status: string; dryRun: boolean };
+    }) as PublishJobRecord;
+    publishJobs.value = upsertPublishJob(publishJobs.value, job);
     if (!job.dryRun) lastPublishJobId.value = job.id;
     statusMessage.value = job.dryRun
       ? "摘要已确认；安全预览模式未执行真实发布"
@@ -376,54 +422,58 @@ const confirmPublish = async (): Promise<void> => {
 };
 
 const completeRetro = (snapshot: PerformanceSnapshot): void => {
-  const prediction = predictions.value[retroPlatform.value];
-  if (!prediction?.frozenAt) throw new Error(`请先冻结${platformLabel(retroPlatform.value)}预测`);
   if (!retroPublicationId.value.trim()) throw new Error("请填写发布记录 ID");
-  if (!retroPublishedAt.value) throw new Error("请填写真实发布时间");
-  const publishedAt = new Date(retroPublishedAt.value).toISOString();
+  const publicationContext = resolvePublicationContext(
+    publicationContexts.value,
+    retroPublicationId.value.trim(),
+    retroPlatform.value,
+  );
+  const publishedAt = publicationContext.publishedAt;
   retro.value = buildRetroReport({
     id: crypto.randomUUID(),
     publicationId: retroPublicationId.value.trim(),
     publishedAt,
-    prediction,
+    prediction: publicationContext.prediction,
     snapshot,
   });
   if (!historySamples.value.some((sample) => sample.snapshotId === snapshot.id)) {
     historySamples.value.push({
       snapshotId: snapshot.id,
-      platform: retroPlatform.value,
-      accountId: accountIds.value[retroPlatform.value],
-      kind: content.value.kind,
+      platform: publicationContext.platform,
+      accountId: publicationContext.accountId,
+      kind: publicationContext.kind,
       metrics: snapshot.metrics,
     });
   }
-  if (scoreCard.value && snapshot.metrics.views !== null
+  if (snapshot.metrics.views !== null
     && !calibrationSamples.value.some((sample) => sample.retro.snapshotId === snapshot.id)) {
     calibrationSamples.value.push({
       retro: retro.value,
-      platform: retroPlatform.value,
-      accountId: accountIds.value[retroPlatform.value],
-      kind: content.value.kind,
-      assessments: scoreCard.value.dimensions,
+      platform: publicationContext.platform,
+      accountId: publicationContext.accountId,
+      kind: publicationContext.kind,
+      assessments: publicationContext.assessments,
       observedPerformance: snapshot.metrics.views,
     });
   }
   upsertPublicationRecord({
     publicationId: retro.value.publicationId,
-    platform: retroPlatform.value,
-    accountId: accountIds.value[retroPlatform.value],
-    kind: content.value.kind,
+    platform: publicationContext.platform,
+    accountId: publicationContext.accountId,
+    kind: publicationContext.kind,
     publishedAt,
     retroCompletedAt: retro.value.completedAt,
   });
   statusMessage.value = "T+3 复盘已生成，预测原文保持不变";
 };
 
-const validateRetroContext = (): void => {
+const validateRetroContext = (): PublicationContextRecord => {
   if (!retroPublicationId.value.trim()) throw new Error("请填写发布记录 ID");
-  if (!retroPublishedAt.value) throw new Error("请填写真实发布时间");
-  const prediction = predictions.value[retroPlatform.value];
-  if (!prediction?.frozenAt) throw new Error(`请先冻结${platformLabel(retroPlatform.value)}预测`);
+  return resolvePublicationContext(
+    publicationContexts.value,
+    retroPublicationId.value.trim(),
+    retroPlatform.value,
+  );
 };
 
 const confirmPublishedAndSchedule = async (): Promise<void> => {
@@ -433,6 +483,17 @@ const confirmPublishedAndSchedule = async (): Promise<void> => {
     if (!/^[a-zA-Z0-9._-]+$/.test(lastPublishJobId.value)) throw new Error("请填写有效的 ReviewFlow 发布任务 ID");
     if (!retroExternalRef.value.trim()) throw new Error("请填写已在平台后台核验的内容链接或 BV 号");
     if (!retroPublishedAt.value) throw new Error("请填写平台显示的真实发布时间");
+    const prediction = predictions.value[retroPlatform.value];
+    if (
+      !prediction?.frozenAt
+      || prediction.contentId !== content.value.id
+      || prediction.accountId !== accountIds.value[retroPlatform.value]
+    ) {
+      throw new Error(`请先冻结当前内容的${platformLabel(retroPlatform.value)}预测`);
+    }
+    if (!scoreCard.value || scoreCard.value.contentId !== content.value.id) {
+      throw new Error("当前发布内容缺少对应的评分卡");
+    }
     const publishedAt = new Date(retroPublishedAt.value).toISOString();
     const confirmation = await window.reviewflow.sidecarRequest({
       path: `/v1/publications/${lastPublishJobId.value}/confirm`,
@@ -442,8 +503,21 @@ const confirmPublishedAndSchedule = async (): Promise<void> => {
         externalRef: retroExternalRef.value.trim(),
         publishedAt,
       },
-    }) as { publicationId: string; job: { status: string }; metricTask: { dueAt: string } };
+    }) as { publicationId: string; job: PublishJobRecord; metricTask: MetricTaskRecord };
     retroPublicationId.value = confirmation.publicationId;
+    publishJobs.value = upsertPublishJob(publishJobs.value, confirmation.job);
+    upsertMetricTask(confirmation.metricTask);
+    upsertPublicationContext({
+      publicationId: confirmation.publicationId,
+      jobId: confirmation.job.id,
+      contentId: content.value.id,
+      platform: retroPlatform.value,
+      accountId: accountIds.value[retroPlatform.value],
+      kind: content.value.kind,
+      publishedAt,
+      prediction,
+      assessments: scoreCard.value.dimensions.map((assessment) => ({ ...assessment })),
+    });
     upsertPublicationRecord({
       publicationId: confirmation.publicationId,
       platform: retroPlatform.value,
@@ -531,7 +605,7 @@ const scheduleMetrics = async (): Promise<void> => {
   metricBusy.value = true;
   try {
     if (!window.reviewflow) throw new Error("采集队列仅在 ReviewFlow 桌面端可用");
-    validateRetroContext();
+    const publicationContext = validateRetroContext();
     if (!retroExternalRef.value.trim()) throw new Error("请填写平台内容链接或 BV 号");
     const task = await window.reviewflow.sidecarRequest({
       path: "/v1/metrics/schedule",
@@ -540,9 +614,10 @@ const scheduleMetrics = async (): Promise<void> => {
         platform: retroPlatform.value,
         publicationId: retroPublicationId.value.trim(),
         externalRef: retroExternalRef.value.trim(),
-        publishedAt: new Date(retroPublishedAt.value).toISOString(),
+        publishedAt: publicationContext.publishedAt,
       },
-    }) as { dueAt: string };
+    }) as MetricTaskRecord;
+    upsertMetricTask(task);
     statusMessage.value = `已加入 T+3 队列：${new Date(task.dueAt).toLocaleString()} 自动尝试`;
   } catch (error) {
     statusMessage.value = error instanceof Error ? error.message : "采集任务创建失败";
@@ -748,6 +823,10 @@ const prepareFormulaExperiment = (): void => {
       current: activeRubric.value,
       retros: samples.map((sample) => sample.retro),
       samples: samples.map((sample) => ({
+        id: sample.retro.id,
+        platform: sample.platform,
+        accountId: sample.accountId,
+        kind: sample.kind,
         assessments: sample.assessments,
         observedPerformance: sample.observedPerformance,
       })),
@@ -819,6 +898,10 @@ onMounted(async () => {
         formulaExperiment?: RubricExperiment | null;
         onboardingComplete?: boolean;
         lastPublishJobId?: string;
+        manifest?: PublishManifest | null;
+        publishJobs?: PublishJobRecord[];
+        metricTasks?: MetricTaskRecord[];
+        publicationContexts?: PublicationContextRecord[];
       } | null;
       const recoveredOnboarding = recoverOnboardingState(saved);
       onboardingOpen.value = recoveredOnboarding.open;
@@ -847,6 +930,10 @@ onMounted(async () => {
       if (saved?.metricDraft) metricDraft.value = saved.metricDraft;
       if (saved?.formulaExperiment) formulaExperiment.value = saved.formulaExperiment;
       if (saved?.lastPublishJobId) lastPublishJobId.value = saved.lastPublishJobId;
+      if (saved?.manifest) manifest.value = saved.manifest;
+      if (saved?.publishJobs) publishJobs.value = saved.publishJobs;
+      if (saved?.metricTasks) metricTasks.value = saved.metricTasks;
+      if (saved?.publicationContexts) publicationContexts.value = saved.publicationContexts;
       if (!saved?.publicationRecords?.length) {
         for (const sample of calibrationSamples.value) {
           const dueAt = new Date(sample.retro.dueAt).getTime();
@@ -869,6 +956,38 @@ onMounted(async () => {
         if (runtime.sidecar !== "starting") break;
         await new Promise((resolveDelay) => window.setTimeout(resolveDelay, 150));
       }
+      if (runtimeStatus.value === "ready") {
+        try {
+          const persistedJobs = await window.reviewflow.sidecarRequest({
+            path: "/v1/publications",
+          }) as PublishJobRecord[];
+          const persistedIds = new Set(persistedJobs.map((job) => job.id));
+          publishJobs.value = [
+            ...persistedJobs,
+            ...publishJobs.value.filter((job) => !persistedIds.has(job.id)),
+          ];
+        } catch {
+          publishJobs.value = await refreshPublishJobs(publishJobs.value, async (jobId) =>
+            await window.reviewflow!.sidecarRequest({
+              path: `/v1/publications/${encodeURIComponent(jobId)}`,
+            }) as PublishJobRecord);
+        }
+        try {
+          const persistedTasks = await window.reviewflow.sidecarRequest({
+            path: "/v1/metrics/tasks",
+          }) as MetricTaskRecord[];
+          const persistedTaskIds = new Set(persistedTasks.map((task) => task.id));
+          metricTasks.value = [
+            ...persistedTasks,
+            ...metricTasks.value.filter((task) => !persistedTaskIds.has(task.id)),
+          ];
+        } catch {
+          // Keep workspace task snapshots until the Sidecar is available again.
+        }
+      }
+      if (!lastPublishJobId.value) {
+        lastPublishJobId.value = confirmablePublishJobs.value[0]?.id ?? "";
+      }
       if (runtimeStatus.value === "missing") statusMessage.value = "发布运行时组件缺失，请重新安装 ReviewFlow";
       else if (runtimeStatus.value === "stopped") statusMessage.value = "发布运行时已停止，请重启 ReviewFlow";
     } catch {
@@ -879,7 +998,7 @@ onMounted(async () => {
 });
 
 let saveTimer: number | undefined;
-watch([content, scoreCard, predictions, selectedPlatforms, accountIds, benchmarks, historySamples, publicationRecords, activeRubric, calibrationSamples, onboardingComplete, lastPublishJobId, platformVariantDrafts, variantEditorPlatform, retro, retroPlatform, retroPublicationId, retroPublishedAt, retroExternalRef, metricSource, metricDraft, formulaExperiment], () => {
+watch([content, scoreCard, predictions, selectedPlatforms, accountIds, benchmarks, historySamples, publicationRecords, activeRubric, calibrationSamples, onboardingComplete, lastPublishJobId, manifest, publishJobs, metricTasks, publicationContexts, platformVariantDrafts, variantEditorPlatform, retro, retroPlatform, retroPublicationId, retroPublishedAt, retroExternalRef, metricSource, metricDraft, formulaExperiment], () => {
   if (!workspaceReady.value || !window.reviewflow) return;
   window.clearTimeout(saveTimer);
   saveTimer = window.setTimeout(() => {
@@ -907,6 +1026,10 @@ watch([content, scoreCard, predictions, selectedPlatforms, accountIds, benchmark
       formulaExperiment: formulaExperiment.value,
       onboardingComplete: onboardingComplete.value,
       lastPublishJobId: lastPublishJobId.value,
+      manifest: manifest.value,
+      publishJobs: publishJobs.value,
+      metricTasks: metricTasks.value,
+      publicationContexts: publicationContexts.value,
     });
   }, 350);
 }, { deep: true });
@@ -1030,6 +1153,7 @@ watch([content, scoreCard, predictions, selectedPlatforms, accountIds, benchmark
           </div>
           <div class="launch-actions">
             <button class="text-action" :disabled="!scoreCard" @click="predictContent">生成区间预测</button>
+            <button v-if="manifest" class="text-action" :disabled="publishBusy" @click="resumePublishPreview">恢复上次发布清单</button>
             <button class="primary-action" :disabled="selectedPlatforms.length === 0 || !selectedPlatforms.every(predictionIsCurrent)" @click="openPublishPreview">进入发布预览</button>
           </div>
         </section>
@@ -1040,8 +1164,33 @@ watch([content, scoreCard, predictions, selectedPlatforms, accountIds, benchmark
         <section class="retro-card">
           <div class="retro-context">
             <label>平台<select v-model="retroPlatform"><option value="xiaohongshu">小红书</option><option value="douyin">抖音</option><option value="bilibili">B 站</option></select></label>
-            <label>ReviewFlow 发布任务 ID<input v-model="lastPublishJobId" placeholder="发布后自动填入，也可粘贴历史任务 ID" /></label>
-            <label>平台发布记录 ID<input v-model="retroPublicationId" placeholder="核验平台发布后自动生成" /></label>
+            <label>
+              ReviewFlow 发布任务 ID
+              <input v-model="lastPublishJobId" list="reviewflow-publish-jobs" placeholder="发布后自动填入，也可粘贴历史任务 ID" />
+              <datalist id="reviewflow-publish-jobs">
+                <option
+                  v-for="job in confirmablePublishJobs"
+                  :key="job.id"
+                  :value="job.id"
+                  :label="`${job.status} · ${new Date(job.updatedAt).toLocaleString()}`"
+                />
+              </datalist>
+              <small v-if="selectedPublishJob">当前任务状态：{{ selectedPublishJob.status }}{{ selectedPublishJob.dryRun ? '（安全预览，不能确认发布）' : '' }}</small>
+            </label>
+            <label>
+              平台发布记录 ID
+              <input v-model="retroPublicationId" list="reviewflow-metric-tasks" placeholder="核验平台发布后自动生成" />
+              <datalist id="reviewflow-metric-tasks">
+                <option
+                  v-for="task in metricTasks"
+                  :key="task.id"
+                  :value="task.publicationId"
+                  :label="`${task.status} · T+3 ${new Date(task.dueAt).toLocaleString()}`"
+                />
+              </datalist>
+              <small v-if="selectedMetricTask">采集状态：{{ selectedMetricTask.status }} · 已尝试 {{ selectedMetricTask.attempts }} 次</small>
+              <small v-if="retroPublicationId && !selectedPublicationContext">缺少这条发布的冻结预测与评分上下文，无法安全复盘</small>
+            </label>
             <label>真实发布时间<input v-model="retroPublishedAt" type="datetime-local" /></label>
             <label>内容链接 / BV 号<input v-model="retroExternalRef" placeholder="B 站可自动采集；其他平台用于追溯" /></label>
           </div>
