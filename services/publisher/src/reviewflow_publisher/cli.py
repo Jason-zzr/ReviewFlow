@@ -151,8 +151,13 @@ def publish_execute(
         raise typer.BadParameter("Manifest or confirmation digest does not match the preview")
     typer.echo("Immutable publish summary:")
     typer.echo(json.dumps(publish_summary(value), ensure_ascii=False, indent=2))
-    if not typer.confirm("Publish this exact manifest to the listed accounts?"):
-        raise typer.Abort()
+    target_count = len(value.variants)
+    for index, variant in enumerate(value.variants, start=1):
+        if not typer.confirm(
+            f"Confirm task {index}/{target_count}: "
+            f"{variant.platform.value} / {variant.accountId}"
+        ):
+            raise typer.Abort()
     data_dir = Path(os.getenv("REVIEWFLOW_DATA_DIR", str(Path.home() / ".reviewflow")))
     request = PublishExecuteRequest(
         manifest=value,

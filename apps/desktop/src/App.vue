@@ -9,6 +9,7 @@ import {
   createScoreCard,
   createStarterRubric,
   freezePrediction,
+  restoreFrozenPrediction,
   sealManifest,
   suggestExperimentalRubric,
   type ContentItem,
@@ -219,6 +220,18 @@ const predictionIsCurrent = (platform: Platform): boolean => {
     accountId: accountIds.value[platform],
     kind: content.value.kind,
   }));
+};
+
+const hydratePredictions = (
+  items: Partial<Record<Platform, Prediction>>,
+): Partial<Record<Platform, Prediction>> => {
+  const restored: Partial<Record<Platform, Prediction>> = {};
+  for (const [platform, prediction] of Object.entries(items) as Array<[Platform, Prediction]>) {
+    restored[platform] = prediction.frozenAt
+      ? restoreFrozenPrediction(prediction)
+      : prediction;
+  }
+  return restored;
 };
 
 const activePrediction = computed(() => predictions.value[predictionPlatform.value] ?? null);
@@ -945,8 +958,10 @@ onMounted(async () => {
         scoreCard.value = saved.scoreCard;
         scoredFingerprint.value = saved.scoredFingerprint ?? contentFingerprint();
       }
-      if (saved?.predictions) predictions.value = saved.predictions;
-      else if (saved?.prediction) predictions.value = { [saved.prediction.platform]: saved.prediction };
+      if (saved?.predictions) predictions.value = hydratePredictions(saved.predictions);
+      else if (saved?.prediction) {
+        predictions.value = hydratePredictions({ [saved.prediction.platform]: saved.prediction });
+      }
       if (saved?.selectedPlatforms) selectedPlatforms.value = saved.selectedPlatforms;
       if (saved?.accountIds) accountIds.value = saved.accountIds;
       if (saved?.benchmarks) benchmarks.value = saved.benchmarks;

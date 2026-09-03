@@ -7,7 +7,7 @@ Important invariants:
 - Scores are integer `0..5`; every dimension requires evidence, and rubric/assessment dimension codes must be complete and unique.
 - Starter dimensions are equally weighted.
 - Predictions record model/prompt versions, content kind, baseline source, valid sample size, confidence, ranges and a full bucket distribution. `prediction-v2` derives each metric's P10/P50/P90 with linear-interpolated empirical quantiles, applies the bounded content-score uplift to those quantiles, and derives the five bucket probabilities from the most complete metric's observed ratios to its median. Cold start retains an explicit public prior. `PredictionHistorySample` carries snapshot ID, platform, account, kind and metrics; the domain deduplicates IDs and admits only the requested context. Calibration ignores rows without any finite, non-negative canonical metric; content-score adjustment accepts only finite values from `0..10`.
-- A frozen prediction is append-only; retrospectives never rewrite it.
+- A frozen prediction is append-only; retrospectives never rewrite it. JSON persistence and Electron IPC do not preserve JavaScript property descriptors, so workspace hydration re-validates the original `frozenAt` value and rebuilds the prediction's deep runtime freeze before it can be reused for publishing or retrospective work.
 - Every selected platform receives its own prediction for the active account and content type.
 - Manifest timestamps use UTC ISO-8601 with milliseconds (`.000Z`) before digesting.
 - An idempotency key is permanently bound to one manifest digest.

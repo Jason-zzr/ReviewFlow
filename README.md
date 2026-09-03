@@ -59,6 +59,8 @@ reviewflow publish execute .\manifest.json --confirm <digest> --idempotency-key 
 reviewflow retro run --prediction .\prediction.json --snapshot .\snapshot.json --published-at 2026-09-01T00:00:00Z --publication-id <confirmed-publication-id>
 ```
 
+`publish execute` first prints the immutable manifest summary and then asks for a separate confirmation for every platform/account target. All confirmations finish before ReviewFlow creates a job or invokes an uploader, so rejecting any target aborts the whole manifest without a partial submission.
+
 The desktop's **复制登录命令** action generates headed login commands for Xiaohongshu and Douyin and a non-headed command for Bilibili. Local acceptance verifies command construction and the unauthenticated status only; it never opens a login terminal or performs a real platform login.
 
 For desktop-parity prediction, the input object includes `id`, `contentId`, `platform`, `accountId`, `kind`, `history`, and `benchmarks`. The CLI then applies the same context filtering, snapshot deduplication, six-metric ranges, bucket probabilities, and baseline rules as the desktop domain module. Legacy metric-row arrays remain supported for scripts that only need a compact views interval.

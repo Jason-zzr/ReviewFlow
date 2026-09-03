@@ -184,3 +184,9 @@ export const freezePrediction = (prediction: Prediction, at = new Date().toISOSt
   };
   return Object.freeze(frozen) as Prediction;
 };
+
+export const restoreFrozenPrediction = (prediction: Prediction): Prediction => {
+  if (!prediction.frozenAt) throw new Error("Prediction is not frozen");
+  const { frozenAt, ...persisted } = prediction;
+  return freezePrediction(persisted, frozenAt);
+};
